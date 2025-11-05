@@ -1,9 +1,9 @@
 package database
 
 import (
-	"database/sql"
 	"log"
 
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
@@ -14,7 +14,7 @@ func InitDatabase() error {
 	var err error
 
 	// Open SQLite database
-	DB, err = gorm.Open(sql.Open("turso", "encrypted.db"))
+	DB, err = gorm.Open(sqlite.Open("folo.db"), &gorm.Config{})
 	if err != nil {
 		return err
 	}

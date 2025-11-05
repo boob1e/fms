@@ -2,7 +2,7 @@
 .PHONY: build run clean dev test
 
 # Binary name
-BINARY_NAME=folo
+BINARY_NAME=fms
 
 # Build the application
 build:

@@ -28,5 +28,6 @@ func main() {
 		})
 	})
 
+	//TODO: configure a broker for all devices
 	log.Fatal(app.Listen(":3000"))
 }
