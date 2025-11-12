@@ -7,24 +7,21 @@ import (
 	"gorm.io/gorm"
 )
 
-var DB *gorm.DB
-
 // InitDatabase initializes the SQLite database connection and runs migrations
-func InitDatabase() error {
+func InitDatabase() (*gorm.DB, error) {
 	var err error
 
 	// Open SQLite database
-	DB, err = gorm.Open(sqlite.Open("folo.db"), &gorm.Config{})
-	if err != nil {
-		return err
+	DB, err := gorm.Open(sqlite.Open("folo.db"), &gorm.Config{})
+
+	if err == nil {
+	log.Println("Database connection established")
 	}
 
-	log.Println("Database connection established")
-
-	return nil
+	return DB, err 
 }
 
 // AutoMigrate runs database migrations for the provided models
-func AutoMigrate(models ...interface{}) error {
-	return DB.AutoMigrate(models...)
+func AutoMigrate(db *gorm.DB, models ...interface{}) error {
+	return db.AutoMigrate(models...)
 }

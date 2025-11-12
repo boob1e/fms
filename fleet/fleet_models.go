@@ -1,11 +1,3 @@
-//	type FleetDevice interface {
-//		SendTask() bool
-//		ReceiveTask() bool
-//		AcceptTask() bool
-//		IsBusy() bool
-//		RunLatestQueuedTask() bool
-//		CancelRunningTask() bool
-//	}
 package fleet
 
 import (
