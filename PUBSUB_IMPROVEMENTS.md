@@ -31,65 +31,20 @@ This document tracks improvements to the Fleet pub/sub messaging system in `flee
   - ✅ Follows "don't close unless signaling" principle
   - Updated: `fleet/messaging_models.go:39-52`
 
+- [x] **Step 3 & 4: Implement task handling with non-blocking execution**
+  - ✅ Implemented `TaskHandler` interface for polymorphic behavior
+  - ✅ Self-injection pattern (Strategy Pattern) for device-specific handlers
+  - ✅ Task status updates (Queued → Running → Complete/Failed)
+  - ✅ Error handling with error return values and logging
+  - ✅ Non-blocking execution via goroutines
+  - ✅ Async completion tracking using channels
+  - ✅ Context-based cancellation for stopping long-running tasks
+  - ✅ Race-free shared state with mutex protection
+  - ✅ Task lifecycle logging (received, failed, completed)
+  - ✅ Defer pattern for guaranteed cleanup
+  - Updated: `fleet/fleet_models.go:29-54`, `fleet/irrigation_device.go:46-126`
+
 ## Remaining Steps
-
-### Step 3: Make task handlers non-blocking
-
-**Location**: `fleet/irrigation_device.go:39-45` (Sprinkler.StartWater)
-
-**Problem**:
-```go
-func (s *Sprinkler) StartWater() {
-    s.IsActive = true
-    for s.IsActive == true {  // Blocks the listener goroutine
-        time.Sleep(1 * time.Second)
-        log.Println("watering crops")
-    }
-}
-```
-
-**Impact**: When `handleTask` calls `StartWater`, the entire listener goroutine blocks, preventing processing of subsequent tasks.
-
-**Solution**: Task handlers should spawn goroutines for long-running work
-```go
-func (f *FleetDevice) handleTask(task Task) {
-    go f.executeTask(task)  // Non-blocking
-}
-```
-
-**Considerations**:
-- How to track running tasks?
-- How to limit concurrent task execution?
-- How to handle task cancellation?
-
-**Related files**:
-- `fleet/fleet_models.go:36-38` (handleTask method)
-- All device implementations that inherit from FleetDevice
-
----
-
-### Step 4: Implement the handleTask method properly
-
-**Location**: `fleet/fleet_models.go:36-38`
-
-**Current state**:
-```go
-func (f *FleetDevice) handleTask(task Task) {
-    // Empty - needs implementation
-}
-```
-
-**Requirements**:
-- Update task status (Queued → Running → Complete/Failed)
-- Delegate to device-specific behavior (polymorphism/interface)
-- Handle errors gracefully
-- Log task lifecycle events
-- Non-blocking execution (see Step 3)
-
-**Design options**:
-1. FleetDevice has a TaskHandler interface/callback
-2. Subclasses override handleTask
-3. Task includes a callback/handler function
 
 ---
 

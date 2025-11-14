@@ -9,6 +9,21 @@ import (
 	"github.com/google/uuid"
 )
 
+type TaskStatus string
+
+const (
+	Queued   TaskStatus = "Queued"
+	Running  TaskStatus = "Running"
+	Complete TaskStatus = "Complete"
+	Failed   TaskStatus = "Failed"
+)
+
+type Task struct {
+	ID          uuid.UUID
+	Instruction string
+	Status      TaskStatus
+}
+
 type Subscriber chan Task
 
 type Broker interface {
@@ -97,19 +112,4 @@ func (b *MessageBroker) Publish(ctx context.Context, topic string, task Task) er
 	log.Printf("[INFO] Task %s successfully delivered to all %d subscribers on topic '%s'",
 		task.ID, successCount, topic)
 	return nil
-}
-
-type TaskStatus string
-
-const (
-	Queued   = "Queued"
-	Running  = "Running"
-	Complete = "Complete"
-	Failed   = "Failed"
-)
-
-type Task struct {
-	ID          uuid.UUID
-	Instruction string
-	Status      TaskStatus
 }

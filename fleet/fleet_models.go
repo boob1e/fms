@@ -1,16 +1,40 @@
+// Package fleet is for managing iot fleet and handling messages between them
 package fleet
 
 import (
 	"context"
+	"log"
 	"sync"
 )
 
-// these methods implmentations are never going to change.
-// use inheritance for the messaging stuff.
+type Device interface {
+	TaskHandler
+	Shutdown()
+}
+
+type Manager struct {
+	devices []Device
+}
+
+func (m *Manager) RegisterDevice(device Device) {
+	m.devices = append(m.devices, device)
+}
+
+func (m *Manager) ShutdownAll() {
+	for _, device := range m.devices {
+		device.Shutdown()
+	}
+}
+
+type TaskHandler interface {
+	HandleTask(task Task) error
+}
+
 type FleetDevice struct {
-	broker *MessageBroker
-	inbox  chan Task
-	wg     sync.WaitGroup
+	broker  Broker // Interface for testability and flexibility
+	inbox   chan Task
+	wg      sync.WaitGroup
+	handler TaskHandler // Injected device-specific task handler - strategy pattern gang of four
 }
 
 func (f *FleetDevice) listen(ctx context.Context) {
@@ -18,15 +42,15 @@ func (f *FleetDevice) listen(ctx context.Context) {
 	for {
 		select {
 		case task := <-f.inbox:
-			f.handleTask(task)
+			if f.handler != nil {
+				if err := f.handler.HandleTask(task); err != nil {
+					log.Printf("Task %s failed: %v", task.ID, err)
+				}
+			}
 		case <-ctx.Done():
 			return //exit
 		}
 	}
-}
-
-func (f *FleetDevice) handleTask(task Task) {
-
 }
 
 func (f *FleetDevice) Shutdown() {

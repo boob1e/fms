@@ -14,8 +14,9 @@ import (
 )
 
 type FMS struct {
-	broker fleet.Broker
-	db     *gorm.DB
+	broker  fleet.Broker
+	db      *gorm.DB
+	manager *fleet.Manager
 }
 
 func main() {
@@ -29,9 +30,12 @@ func main() {
 	}
 
 	broker := fleet.NewMessageBroker()
+
+	manager := &fleet.Manager{}
 	fms := &FMS{
-		broker: broker,
-		db:     db,
+		broker:  broker,
+		db:      db,
+		manager: manager,
 	}
 	app := fiber.New(fiber.Config{
 		AppName: "FMS v1.0",
@@ -40,20 +44,22 @@ func main() {
 	app.Use(logger.New())
 	app.Use(recover.New())
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	//TODO: this is an example, make this dynamic via some type of ioc container or shared mem
-	// sprinklerZoneA := fleet.NewSprinkler(ctx, fms.Broker, "a")
-
 	app.Get("/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{
 			"status": "ok",
 		})
 	})
 
-	api := app.Group("/api")
+	// api := app.Group("/api")
 
-	//TODO: configure a broker for all devices
+	registerDevices(fms)
 	log.Fatal(app.Listen(":3000"))
+}
+
+func registerDevices(fms *FMS) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sprinklerZoneA := fleet.NewSprinkler(ctx, fms.broker, "a")
+	fms.manager.RegisterDevice(sprinklerZoneA)
 }
