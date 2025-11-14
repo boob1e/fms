@@ -2,45 +2,70 @@ package main
 
 import (
 	"context"
-	"farm_management_system/database"
 	"farm_management_system/fleet"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/gofiber/fiber/v3"
-	"gorm.io/gorm"
 
 	"github.com/gofiber/fiber/v3/middleware/logger"
 	"github.com/gofiber/fiber/v3/middleware/recover"
 )
 
-type FMS struct {
-	broker  fleet.Broker
-	db      *gorm.DB
-	manager *fleet.Manager
-}
-
 func main() {
-	db, err := database.InitDatabase()
+	appCtx, appCancel := context.WithCancel(context.Background())
+	defer appCancel()
+
+	setupShutdownListener(appCancel)
+
+	fms, err := NewFMS(
+		WithAppName("FMS v1.0"),
+		WithPort(":3000"),
+		WithContext(appCtx),
+	)
+
 	if err != nil {
-		log.Fatal("Failed to initialize database:", err)
+		log.Fatal("Failed to initialize FMS:", err)
 	}
 
-	if err := database.AutoMigrate(db); err != nil {
-		log.Fatal("Failed to run migrations:", err)
-	}
-
-	broker := fleet.NewMessageBroker()
-
-	manager := &fleet.Manager{}
-	fms := &FMS{
-		broker:  broker,
-		db:      db,
-		manager: manager,
-	}
 	app := fiber.New(fiber.Config{
 		AppName: "FMS v1.0",
 	})
 
+	mapRoutes(app)
+	//TODO: this will run any stored devices in db on startup
+	registerExistingDevices(fms)
+
+	go func() {
+		<-appCtx.Done()
+		log.Println("Shutting down HTTP server...")
+		app.Shutdown()
+	}()
+
+	log.Fatal(app.Listen(":3000"))
+}
+
+func setupShutdownListener(appCancel context.CancelFunc) {
+	go func() {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+		<-sigChan
+		log.Println("Shutdown signal received")
+		appCancel()
+	}()
+}
+
+func registerExistingDevices(fms *FMS) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fleet.NewSprinkler(ctx, fms.broker, "a")
+	// fms.manager.RegisterDevice(sprinklerZoneA)
+}
+
+func mapRoutes(app *fiber.App) {
 	app.Use(logger.New())
 	app.Use(recover.New())
 
@@ -50,16 +75,9 @@ func main() {
 		})
 	})
 
-	// api := app.Group("/api")
+	api := app.Group("/api")
 
-	registerDevices(fms)
-	log.Fatal(app.Listen(":3000"))
-}
+	fleetHandler := fleet.NewFleetHandler(nil)
 
-func registerDevices(fms *FMS) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	sprinklerZoneA := fleet.NewSprinkler(ctx, fms.broker, "a")
-	fms.manager.RegisterDevice(sprinklerZoneA)
+	fleet.RegisterFleetRoutes(api, fleetHandler)
 }

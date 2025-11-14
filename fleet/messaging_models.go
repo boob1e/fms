@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -21,7 +22,43 @@ const (
 type Task struct {
 	ID          uuid.UUID
 	Instruction string
+}
+
+type TaskHandler interface {
+	HandleTask(task Task)
+}
+
+type TaskState struct {
+	Task        Task
+	PublishedAt time.Time
+	ReceivedAt  *time.Time
+	StartedAt   *time.Time
+	CompletedAt *time.Time
 	Status      TaskStatus
+	DeviceID    string
+}
+
+type TaskAck struct {
+	TaskID    uuid.UUID
+	Status    TaskStatus
+	DeviceID  uuid.UUID
+	Timestamp time.Time
+	Error     string
+}
+
+func NewTaskAck(tid uuid.UUID, s TaskStatus, did uuid.UUID) TaskAck {
+	return TaskAck{
+		TaskID:    tid,
+		Status:    s,
+		DeviceID:  did,
+		Timestamp: time.Now(),
+	}
+}
+
+func NewErrTaskAck(tid uuid.UUID, did uuid.UUID, errorMsg string) TaskAck {
+	ta := NewTaskAck(tid, Failed, did)
+	ta.Error = errorMsg
+	return ta
 }
 
 type Subscriber chan Task
@@ -30,17 +67,26 @@ type Broker interface {
 	Subscribe(topic string) Subscriber
 	Unsubscribe(topic string, ch Subscriber)
 	Publish(ctx context.Context, topic string, task Task) error
+	GetACKChannel() chan TaskAck
+	GetTaskStatus(taskID uuid.UUID) (*TaskState, error)
 }
 
 type MessageBroker struct {
 	subscribers map[string][]Subscriber // keys are topics
+	ackChan     chan TaskAck
+	taskStates  map[uuid.UUID]*TaskState
 	mu          sync.RWMutex
 }
 
 func NewMessageBroker() *MessageBroker {
-	return &MessageBroker{
+	b := &MessageBroker{
 		subscribers: make(map[string][]Subscriber),
+		ackChan:     make(chan TaskAck, 100),
+		taskStates:  make(map[uuid.UUID]*TaskState),
 	}
+	go b.processACKs()
+
+	return b
 }
 
 func (b *MessageBroker) Subscribe(topic string) Subscriber {
@@ -67,10 +113,18 @@ func (b *MessageBroker) Unsubscribe(topic string, ch Subscriber) {
 }
 
 func (b *MessageBroker) Publish(ctx context.Context, topic string, task Task) error {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
+	// Initialize task state tracking
+	b.mu.Lock()
+	b.taskStates[task.ID] = &TaskState{
+		Task:        task,
+		PublishedAt: time.Now(),
+		Status:      Queued,
+	}
+	b.mu.Unlock()
 
+	b.mu.RLock()
 	subs := b.subscribers[topic]
+	b.mu.RUnlock()
 
 	// No subscribers is not an error, just a no-op
 	if len(subs) == 0 {
@@ -112,4 +166,53 @@ func (b *MessageBroker) Publish(ctx context.Context, topic string, task Task) er
 	log.Printf("[INFO] Task %s successfully delivered to all %d subscribers on topic '%s'",
 		task.ID, successCount, topic)
 	return nil
+}
+
+func (b *MessageBroker) GetACKChannel() chan TaskAck {
+	return b.ackChan
+}
+
+func (b *MessageBroker) processACKs() {
+	for ack := range b.ackChan {
+		log.Printf("[ACK] Task %s: %s (device: %s, time: %s)",
+			ack.TaskID, ack.Status, ack.DeviceID, ack.Timestamp)
+
+		if ack.Status == Failed && ack.Error != "" {
+			log.Printf("[ACK] Error details: %s", ack.Error)
+		}
+
+		b.mu.Lock()
+		if state, exists := b.taskStates[ack.TaskID]; exists {
+			state.Status = ack.Status
+			state.DeviceID = ack.DeviceID.String()
+
+			switch ack.Status {
+			case Running:
+				if state.StartedAt == nil {
+					now := ack.Timestamp
+					state.StartedAt = &now
+				}
+			case Complete, Failed:
+				if state.CompletedAt == nil {
+					now := ack.Timestamp
+					state.CompletedAt = &now
+				}
+			}
+		} else {
+			log.Printf("ack for unknown task %s", ack.TaskID)
+		}
+		b.mu.Unlock()
+	}
+
+}
+
+func (b *MessageBroker) GetTaskStatus(taskID uuid.UUID) (*TaskState, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	ts, exists := b.taskStates[taskID]
+	if !exists {
+		return nil, fmt.Errorf("task %s not found", taskID)
+	}
+	stateCopy := *ts
+	return &stateCopy, nil
 }

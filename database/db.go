@@ -15,13 +15,13 @@ func InitDatabase() (*gorm.DB, error) {
 	DB, err := gorm.Open(sqlite.Open("folo.db"), &gorm.Config{})
 
 	if err == nil {
-	log.Println("Database connection established")
+		log.Println("Database connection established")
 	}
 
-	return DB, err 
+	return DB, err
 }
 
 // AutoMigrate runs database migrations for the provided models
-func AutoMigrate(db *gorm.DB, models ...interface{}) error {
+func AutoMigrate(db *gorm.DB, models ...any) error {
 	return db.AutoMigrate(models...)
 }

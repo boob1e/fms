@@ -2,10 +2,11 @@ package fleet
 
 import (
 	"context"
-	"errors"
 	"log"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type IrrigationDevice interface {
@@ -14,7 +15,7 @@ type IrrigationDevice interface {
 }
 
 type Sprinkler struct {
-	FleetDevice
+	device
 	IsActive        bool
 	PressureReading float32
 	// TODO: currentCycleTime
@@ -22,14 +23,16 @@ type Sprinkler struct {
 	mu             sync.Mutex
 }
 
-func NewSprinkler(ctx context.Context, broker Broker, zone string) *Sprinkler {
+func NewSprinkler(cancel context.CancelFunc, broker Broker, zone string) *Sprinkler {
 	ch := broker.Subscribe("irrigation-" + zone)
 
 	s := &Sprinkler{
-		FleetDevice: FleetDevice{
+		device: device{
+			ID:     uuid.New(),
 			broker: broker,
 			inbox:  ch,
 		},
+		cancelWatering:  cancel,
 		IsActive:        false,
 		PressureReading: 0,
 	}
@@ -37,56 +40,54 @@ func NewSprinkler(ctx context.Context, broker Broker, zone string) *Sprinkler {
 	// Inject self as the task handler (polymorphism via interface)
 	s.handler = s
 
-	s.wg.Add(1)
-	go s.listen(ctx)
-
 	return s
 }
 
 // HandleTask implements the TaskHandler interface for Sprinkler.
 // It processes incoming tasks and delegates to device-specific methods.
-func (s *Sprinkler) HandleTask(task Task) error {
-	log.Printf("Sprinkler received task %s: %s (Status: %s)", task.ID, task.Instruction, task.Status)
-
+func (s *Sprinkler) HandleTask(task Task) {
+	log.Printf("Sprinkler received task %s: %s", task.ID, task.Instruction)
+	ackChan := s.broker.GetACKChannel()
 	switch task.Instruction {
 	case "start":
-		task.Status = Running
-
-		ctx, cancel := context.WithCancel(context.Background())
-		s.mu.Lock()
-		s.cancelWatering = cancel
-		s.mu.Unlock()
-
-		done := make(chan error, 1)
-		// non blocking task run
-		go func() {
-			err := s.StartWater(ctx)
-			done <- err
-		}()
-
-		go func() {
-			err := <-done
-			if err != nil {
-				task.Status = Failed
-				log.Printf("Task %s failed: %v", task.ID, err)
-			} else {
-				task.Status = Complete
-				log.Printf("Task %s completed", task.ID)
-			}
-			s.mu.Lock()
-			s.cancelWatering = nil
-			s.mu.Unlock()
-		}()
+		s.handleStartTask(task, ackChan)
 	case "stop":
 		s.StopWater()
-		task.Status = Complete
+		ackChan <- NewTaskAck(task.ID, Complete, s.ID)
 	default:
 		log.Printf("Unknown instruction: %s", task.Instruction)
-		task.Status = Failed
-		return errors.New("failed to handle sprinkler task")
+		ackChan <- NewErrTaskAck(task.ID, s.ID, "Unknown instruction type")
 	}
+}
 
-	return nil
+func (s *Sprinkler) handleStartTask(task Task, ackChan chan TaskAck) {
+
+	ackChan <- NewTaskAck(task.ID, Running, s.ID)
+	ctx, cancel := context.WithCancel(context.Background())
+	s.mu.Lock()
+	s.cancelWatering = cancel
+	s.mu.Unlock()
+
+	done := make(chan error, 1)
+	// non blocking task run
+	go func() {
+		err := s.StartWater(ctx)
+		done <- err
+	}()
+
+	go func() {
+		err := <-done
+		if err != nil {
+			log.Printf("Task %s failed: %v", task.ID, err)
+			ackChan <- NewErrTaskAck(task.ID, s.ID, err.Error())
+		} else {
+			log.Printf("Task %s completed", task.ID)
+			ackChan <- NewTaskAck(task.ID, Complete, s.ID)
+		}
+		s.mu.Lock()
+		s.cancelWatering = nil
+		s.mu.Unlock()
+	}()
 }
 
 func (s *Sprinkler) StartWater(ctx context.Context) error {
