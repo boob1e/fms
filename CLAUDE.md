@@ -33,11 +33,31 @@ When implementing features:
 
 ## Code Style Preferences
 
-### Go Idioms
-- Use idiomatic Go patterns (two-value map lookups, defer for cleanup, etc.)
-- Prefer interfaces for dependency injection
-- Use proper locking strategies (RLock for reads, Lock for writes)
-- Implement defensive copying for internal state protection
+### Go Idioms - MANDATORY
+
+**CRITICAL: Always prioritize idiomatic Go patterns in every response.**
+
+When providing suggestions, code examples, or discussing architecture:
+1. **Reference Go standard library patterns first** - If stdlib does it, that's the idiomatic way
+2. **Favor simplicity over cleverness** - Go values clarity and readability
+3. **Use descriptive names over abbreviations** - Except for well-known conventions (ctx, err, etc.)
+4. **Provide the "Go way" as the primary recommendation** - Mention alternatives only if asked
+
+**Specific Go Idioms to Follow:**
+- Interfaces: Small, focused interfaces (often single-method); named with `-er` suffix
+- Constants: Prefix with type name when there are multiple similar types (`http.MethodGet`, `TypeSprinkler`)
+- Errors: Return errors as last return value; use `errors.New()` or `fmt.Errorf()`
+- Concurrency: Use channels for communication, mutexes for state; `sync.RWMutex` for read-heavy operations
+- Naming: Exported (PascalCase), unexported (camelCase); avoid stuttering (`fleet.Manager` not `fleet.FleetManager`)
+- File organization: Name files after primary type or concern; flat structure until complexity demands subdirectories
+- Nil checks: Two-value map lookups (`val, ok := map[key]`), type assertions, channel receives
+- Resource cleanup: Use `defer` for cleanup operations immediately after acquisition
+- Dependency injection: Use interfaces, not concrete types; constructor functions return concrete types
+
+**When Unsure:**
+- Check Go standard library for similar patterns
+- Favor the approach used in `net/http`, `database/sql`, `context` packages
+- Prioritize readability and maintainability over brevity
 
 ### Architecture Patterns
 - Strategy Pattern for polymorphic behavior (self-injection)

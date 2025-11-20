@@ -66,7 +66,10 @@ func NewFMS(ctx context.Context, opts ...FMSOption) (*FMS, error) {
 
 	// Auto-migrate if enabled
 	if fms.config.AutoMigrate {
-		if err := database.AutoMigrate(fms.db); err != nil {
+		if err := database.AutoMigrate(
+			fms.db,
+			&fleet.RegisteredDevice{},
+			&fleet.IrrigationDevice{}); err != nil {
 			return nil, fmt.Errorf("failed to run migrations: %w", err)
 		}
 	}

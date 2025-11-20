@@ -21,9 +21,9 @@ func main() {
 	setupShutdownListener(appCancel)
 
 	fms, err := NewFMS(
+		appCtx,
 		WithAppName("FMS v1.0"),
-		WithPort(":3000"),
-		WithContext(appCtx),
+		WithPort(3000),
 	)
 
 	if err != nil {
@@ -58,10 +58,10 @@ func setupShutdownListener(appCancel context.CancelFunc) {
 }
 
 func registerExistingDevices(fms *FMS) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// ctx, cancel := context.WithCancel(context.Background())
+	// defer cancel()
 
-	fleet.NewSprinkler(ctx, fms.broker, "a")
+	// fleet.NewSprinkler(ctx, fms.broker, "a")
 	// fms.manager.RegisterDevice(sprinklerZoneA)
 }
 

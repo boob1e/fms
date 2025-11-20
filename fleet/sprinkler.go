@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 )
 
-type IrrigationDevice interface {
+type Irrigator interface {
 	StartWater(ctx context.Context) error
 	StopWater()
 }
@@ -23,7 +23,7 @@ type Sprinkler struct {
 	mu             sync.Mutex
 }
 
-func NewSprinkler(cancel context.CancelFunc, broker Broker, zone string) *Sprinkler {
+func NewSprinkler(broker Broker, zone string) *Sprinkler {
 	ch := broker.Subscribe("irrigation-" + zone)
 
 	s := &Sprinkler{
@@ -32,7 +32,6 @@ func NewSprinkler(cancel context.CancelFunc, broker Broker, zone string) *Sprink
 			broker: broker,
 			inbox:  ch,
 		},
-		cancelWatering:  cancel,
 		IsActive:        false,
 		PressureReading: 0,
 	}

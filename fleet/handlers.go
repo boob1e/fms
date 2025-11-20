@@ -1,8 +1,6 @@
 package fleet
 
 import (
-	"log"
-
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -19,16 +17,21 @@ func NewFleetHandler(s *DeviceService) *FleetHandler {
 
 func RegisterFleetRoutes(router fiber.Router, handler *FleetHandler) {
 	fleet := router.Group("/fleet")
-	fleet.Get("/register", handler.RegisterFleetDevice)
+	fleet.Post("/register", handler.RegisterFleetDevice)
 }
 
 // RegisterFleetDevice connects a new device to the network
 func (h *FleetHandler) RegisterFleetDevice(c fiber.Ctx) error {
-	// TODO: register a generic fleet device and have irrigation settings be join table?
-	log.Println("registering new fleet device")
-	err := h.service.RegisterDevice(RegisterDeviceReq{})
-	if err != nil {
-		return c.Err()
+	req := new(RegisterDeviceReq)
+	if err := c.Bind().JSON(req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, err.Error())
 	}
-	return c.SendString("registered new fleet device")
+	id, err := h.service.RegisterDevice(*req)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(fiber.Map{
+		"message": "device registered successfully",
+		"uuid":    id,
+	})
 }
