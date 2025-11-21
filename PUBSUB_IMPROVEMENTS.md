@@ -44,28 +44,9 @@ This document tracks improvements to the Fleet pub/sub messaging system in `flee
   - ✅ Defer pattern for guaranteed cleanup
   - Updated: `fleet/fleet_models.go:29-54`, `fleet/irrigation_device.go:46-126`
 
-## Remaining Steps
+## All Steps Complete! ✅
 
----
-
-### Step 6: Add message acknowledgment/completion tracking
-
-**Status**: Optional enhancement
-
-**Rationale**: Currently no way to know if a subscriber successfully processed a task vs just received it.
-
-**Features to consider**:
-- ACK/NACK messages back to broker
-- Task completion confirmation
-- Retry logic for failed tasks
-- Dead letter queue for permanently failed tasks
-
-**Implementation complexity**: Medium-High
-
-**Files to modify**:
-- `fleet/messaging_models.go` - Add ACK methods
-- `fleet/fleet_models.go` - Send ACKs from handleTask
-- New: Task queue/retry logic
+All planned improvements have been implemented. For advanced features like ACK/NACK, retry logic, and dead letter queues, see `TASK_ACK_RETRY_SPEC.md`.
 
 ---
 
@@ -73,6 +54,7 @@ This document tracks improvements to the Fleet pub/sub messaging system in `flee
 
 ### Minor Issue: Typo in health endpoint
 **Location**: `main.go:25`
+**Status**: ✅ Fixed
 ```go
 app.Get("/heatlh", func(c fiber.Ctx) error {  // Should be "/health"
 ```
