@@ -24,13 +24,15 @@ type Sprinkler struct {
 }
 
 func NewSprinkler(broker Broker, zone string) *Sprinkler {
-	ch := broker.Subscribe("irrigation-" + zone)
+	topic := "irrigation-" + zone
+	ch := broker.Subscribe(topic)
 
 	s := &Sprinkler{
 		device: device{
 			ID:     uuid.New(),
 			broker: broker,
 			inbox:  ch,
+			topic:  topic,
 		},
 		IsActive:        false,
 		PressureReading: 0,
@@ -60,26 +62,34 @@ func (s *Sprinkler) HandleTask(task Task) {
 }
 
 func (s *Sprinkler) handleStartTask(task Task, ackChan chan TaskAck) {
-
 	ackChan <- NewTaskAck(task.ID, Running, s.ID)
-	ctx, cancel := context.WithCancel(context.Background())
+
+	// Use device context as parent - cancels automatically on Shutdown
+	ctx, cancel := context.WithCancel(s.ctx)
 	s.mu.Lock()
 	s.cancelWatering = cancel
 	s.mu.Unlock()
 
 	done := make(chan error, 1)
-	// non blocking task run
+
+	// Track StartWater goroutine
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		err := s.StartWater(ctx)
 		done <- err
 	}()
 
+	// Track completion handler goroutine
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		err := <-done
-		if err != nil {
+		if err != nil && err != context.Canceled {
+			// Don't ACK if shutdown cancelled the context
 			log.Printf("Task %s failed: %v", task.ID, err)
 			ackChan <- NewErrTaskAck(task.ID, s.ID, err.Error())
-		} else {
+		} else if err == nil {
 			log.Printf("Task %s completed", task.ID)
 			ackChan <- NewTaskAck(task.ID, Complete, s.ID)
 		}

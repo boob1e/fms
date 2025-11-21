@@ -367,20 +367,22 @@ log.Printf("[DLQ] Task %s: Max retries exceeded, moved to DLQ", taskID)
 ## Implementation Checklist
 
 - [x] **Phase 1**: ACK/NACK Infrastructure ✅ COMPLETE
-  - [x] Add TaskAck type (`messaging_models.go:31-37`)
+  - [x] Add TaskAck type (`task.go:37-43`)
   - [x] Add ackChan to MessageBroker (initialized with buffer size 100)
-  - [x] Implement processACKs() goroutine (`messaging_models.go:154-162`)
+  - [x] Implement processACKs() goroutine (`broker.go:124-156`)
   - [x] Update Sprinkler to send ACKs (Running, Complete, Failed)
-  - [x] Created helper functions: `NewTaskAck()` and `NewErrTaskAck()`
+  - [x] Created helper functions: `NewTaskAck()` and `NewErrTaskAck()` (`task.go:45-58`)
   - [x] Removed `Task.Status` field (Task is now immutable command)
   - [x] Removed error return from `TaskHandler.HandleTask()`
-  - [ ] Write tests
+  - [x] Write tests (9 comprehensive tests in `broker_test.go`)
+  - [x] Fixed goroutine lifecycle management (device context + WaitGroup tracking)
+  - [x] Fixed topic tracking for proper cleanup (`worker.go:42`)
 
-- [ ] **Phase 2**: Completion Tracking
-  - [ ] Add TaskState type
-  - [ ] Track task lifecycle in broker
-  - [ ] Implement GetTaskStatus() query
-  - [ ] Write tests
+- [x] **Phase 2**: Completion Tracking ✅ COMPLETE
+  - [x] Add TaskState type (`task.go:27-35`)
+  - [x] Track task lifecycle in broker (`broker.go:26, 66-72, 133-151`)
+  - [x] Implement GetTaskStatus() query (`broker.go:158-167`)
+  - [x] Tests included in Phase 1 test suite
 
 - [ ] **Phase 3**: Retry Logic
   - [ ] Add TaskRetryState type
@@ -413,3 +415,26 @@ log.Printf("[DLQ] Task %s: Max retries exceeded, moved to DLQ", taskID)
   - This prevents confusion about "source of truth" for task status
 - Leverage existing context cancellation patterns from Step 4
 - Helper functions (`NewTaskAck`, `NewErrTaskAck`) prevent common mistakes
+
+### Phase 1 & 2 Implementation Improvements
+
+During test development, critical issues were uncovered and fixed:
+
+1. **Goroutine Lifecycle Management** (`sprinkler.go:64-100`)
+   - Fixed: `handleStartTask` goroutines were not tracked by WaitGroup
+   - Solution: Track all spawned goroutines with `s.wg.Add/Done()`
+   - Impact: Prevents resource leaks and ensures clean shutdown
+
+2. **Device Context Hierarchy** (`worker.go:38-63`)
+   - Added: Device-level context derived from Start() context
+   - Benefit: Automatic cancellation of all device operations on Shutdown()
+   - Pattern: Parent context → device context → task context hierarchy
+
+3. **Topic Storage for Cleanup** (`worker.go:42`)
+   - Fixed: Hardcoded "irrigation-zone" in Shutdown didn't match actual subscriptions
+   - Solution: Store subscription topic in device struct
+   - Impact: Proper unsubscription prevents channel leaks
+
+4. **Context Cancellation in ACK Logic** (`sprinkler.go:88-89`)
+   - Added: Skip ACK for `context.Canceled` errors during shutdown
+   - Prevents: Spurious failure ACKs when device is deliberately shut down

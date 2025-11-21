@@ -39,6 +39,9 @@ type device struct {
 	ID      uuid.UUID
 	broker  Broker // Interface for testability and flexibility
 	inbox   chan Task
+	topic   string             // Subscription topic for cleanup
+	ctx     context.Context    // Device lifecycle context
+	cancel  context.CancelFunc // Cancel function for shutdown
 	wg      sync.WaitGroup
 	handler TaskHandler // Injected device-specific task handler - strategy pattern gang of four
 }
@@ -48,12 +51,14 @@ func (d *device) GetID() uuid.UUID {
 }
 
 func (d *device) Start(ctx context.Context) {
+	d.ctx, d.cancel = context.WithCancel(ctx)
 	d.wg.Add(1)
-	go d.listen(ctx)
+	go d.listen(d.ctx)
 }
 
 func (d *device) Shutdown() {
-	d.broker.Unsubscribe("irrigation-zone", d.inbox)
+	d.cancel()
+	d.broker.Unsubscribe(d.topic, d.inbox)
 	d.wg.Wait()
 }
 
