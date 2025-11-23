@@ -24,15 +24,12 @@ type Sprinkler struct {
 }
 
 func NewSprinkler(broker Broker, zone string) *Sprinkler {
-	topic := "irrigation-" + zone
-	ch := broker.Subscribe(topic)
-
 	s := &Sprinkler{
 		device: device{
-			ID:     uuid.New(),
-			broker: broker,
-			inbox:  ch,
-			topic:  topic,
+			ID:            uuid.New(),
+			broker:        broker,
+			inbox:         make(chan Task, 10),
+			subscriptions: make(map[string]Subscriber),
 		},
 		IsActive:        false,
 		PressureReading: 0,
@@ -40,6 +37,11 @@ func NewSprinkler(broker Broker, zone string) *Sprinkler {
 
 	// Inject self as the task handler (polymorphism via interface)
 	s.handler = s
+
+	s.subscribe("worker-" + string(WorkerTypeIrrigation))
+	s.subscribe("device-" + string(DeviceTypeSprinkler))
+	s.subscribe("device-" + s.ID.String())
+	s.subscribe("zone-" + zone)
 
 	return s
 }

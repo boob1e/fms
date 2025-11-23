@@ -82,12 +82,13 @@ func TestMessageBroker_ProcessACKs(t *testing.T) {
 	task := Task{
 		ID:          uuid.New(),
 		Instruction: "test",
+		Topic:       "test-topic",
 	}
 	ctx := context.Background()
 	sub := broker.Subscribe("test-topic")
 	defer broker.Unsubscribe("test-topic", sub)
 
-	err := broker.Publish(ctx, "test-topic", task)
+	err := broker.Publish(ctx, task)
 	if err != nil {
 		t.Fatalf("Failed to publish task: %v", err)
 	}
@@ -152,12 +153,13 @@ func TestMessageBroker_ProcessACKs_Failed(t *testing.T) {
 	task := Task{
 		ID:          uuid.New(),
 		Instruction: "test",
+		Topic:       "test-topic",
 	}
 	ctx := context.Background()
 	sub := broker.Subscribe("test-topic")
 	defer broker.Unsubscribe("test-topic", sub)
 
-	err := broker.Publish(ctx, "test-topic", task)
+	err := broker.Publish(ctx, task)
 	if err != nil {
 		t.Fatalf("Failed to publish task: %v", err)
 	}
@@ -224,12 +226,13 @@ func TestMessageBroker_GetTaskStatus(t *testing.T) {
 	task := Task{
 		ID:          uuid.New(),
 		Instruction: "test",
+		Topic:       "test-topic",
 	}
 	ctx := context.Background()
 	sub := broker.Subscribe("test-topic")
 	defer broker.Unsubscribe("test-topic", sub)
 
-	err = broker.Publish(ctx, "test-topic", task)
+	err = broker.Publish(ctx, task)
 	if err != nil {
 		t.Fatalf("Failed to publish task: %v", err)
 	}
@@ -262,7 +265,7 @@ func TestSprinkler_ACK_Lifecycle(t *testing.T) {
 	broker := NewMessageBroker()
 	defer close(broker.ackChan)
 
-	sprinkler := NewSprinkler(broker, "zone-a")
+	sprinkler := NewSprinkler(broker, "a")
 	sprinkler.Start(context.Background())
 	defer sprinkler.Shutdown()
 
@@ -270,9 +273,10 @@ func TestSprinkler_ACK_Lifecycle(t *testing.T) {
 	task := Task{
 		ID:          uuid.New(),
 		Instruction: "start",
+		Topic:       "zone-a",
 	}
 
-	err := broker.Publish(context.Background(), "irrigation-zone-a", task)
+	err := broker.Publish(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Failed to publish task: %v", err)
 	}
@@ -295,8 +299,9 @@ func TestSprinkler_ACK_Lifecycle(t *testing.T) {
 	stopTask := Task{
 		ID:          uuid.New(),
 		Instruction: "stop",
+		Topic:       "zone-a",
 	}
-	err = broker.Publish(context.Background(), "irrigation-zone-a", stopTask)
+	err = broker.Publish(context.Background(), stopTask)
 	if err != nil {
 		t.Fatalf("Failed to publish stop task: %v", err)
 	}
@@ -318,7 +323,7 @@ func TestSprinkler_ACK_UnknownInstruction(t *testing.T) {
 	broker := NewMessageBroker()
 	defer close(broker.ackChan)
 
-	sprinkler := NewSprinkler(broker, "zone-b")
+	sprinkler := NewSprinkler(broker, "b")
 	sprinkler.Start(context.Background())
 	defer sprinkler.Shutdown()
 
@@ -326,9 +331,10 @@ func TestSprinkler_ACK_UnknownInstruction(t *testing.T) {
 	task := Task{
 		ID:          uuid.New(),
 		Instruction: "invalid-command",
+		Topic:       "zone-b",
 	}
 
-	err := broker.Publish(context.Background(), "irrigation-zone-b", task)
+	err := broker.Publish(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Failed to publish task: %v", err)
 	}
@@ -361,8 +367,9 @@ func TestMessageBroker_ConcurrentACKs(t *testing.T) {
 		tasks[i] = Task{
 			ID:          uuid.New(),
 			Instruction: "test",
+			Topic:       "test-topic",
 		}
-		err := broker.Publish(ctx, "test-topic", tasks[i])
+		err := broker.Publish(ctx, tasks[i])
 		if err != nil {
 			t.Fatalf("Failed to publish task %d: %v", i, err)
 		}

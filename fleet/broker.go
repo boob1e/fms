@@ -15,7 +15,7 @@ type Subscriber chan Task
 type Broker interface {
 	Subscribe(topic string) Subscriber
 	Unsubscribe(topic string, ch Subscriber)
-	Publish(ctx context.Context, topic string, task Task) error
+	Publish(ctx context.Context, task Task) error
 	GetACKChannel() chan TaskAck
 	GetTaskStatus(taskID uuid.UUID) (*TaskState, error)
 }
@@ -61,7 +61,7 @@ func (b *MessageBroker) Unsubscribe(topic string, ch Subscriber) {
 
 }
 
-func (b *MessageBroker) Publish(ctx context.Context, topic string, task Task) error {
+func (b *MessageBroker) Publish(ctx context.Context, task Task) error {
 	// Initialize task state tracking
 	b.mu.Lock()
 	b.taskStates[task.ID] = &TaskState{
@@ -72,12 +72,12 @@ func (b *MessageBroker) Publish(ctx context.Context, topic string, task Task) er
 	b.mu.Unlock()
 
 	b.mu.RLock()
-	subs := b.subscribers[topic]
+	subs := b.subscribers[task.Topic]
 	b.mu.RUnlock()
 
 	// No subscribers is not an error, just a no-op
 	if len(subs) == 0 {
-		log.Printf("[WARN] No subscribers for topic '%s', task %s not delivered", topic, task.ID)
+		log.Printf("[WARN] No subscribers for topic '%s', task %s not delivered", task.Topic, task.ID)
 		return nil
 	}
 
@@ -92,15 +92,15 @@ func (b *MessageBroker) Publish(ctx context.Context, topic string, task Task) er
 		select {
 		case sub <- task:
 			successCount++
-			log.Printf("[DEBUG] Task %s delivered to subscriber %d on topic '%s'", task.ID, i, topic)
+			log.Printf("[DEBUG] Task %s delivered to subscriber %d on topic '%s'", task.ID, i, task.Topic)
 		case <-ctx.Done():
 			timeoutCount++
 			log.Printf("[ERROR] Task %s failed to subscriber %d on topic '%s': context timeout/cancelled",
-				task.ID, i, topic)
+				task.ID, i, task.Topic)
 		default:
 			channelFullCount++
 			log.Printf("[ERROR] Task %s failed to subscriber %d on topic '%s': channel full",
-				task.ID, i, topic)
+				task.ID, i, task.Topic)
 		}
 	}
 
@@ -108,12 +108,12 @@ func (b *MessageBroker) Publish(ctx context.Context, topic string, task Task) er
 	if timeoutCount > 0 || channelFullCount > 0 {
 		return fmt.Errorf(
 			"partial delivery failure on topic '%s': %d/%d delivered (%d timeout, %d channel full)",
-			topic, successCount, len(subs), timeoutCount, channelFullCount,
+			task.Topic, successCount, len(subs), timeoutCount, channelFullCount,
 		)
 	}
 
 	log.Printf("[INFO] Task %s successfully delivered to all %d subscribers on topic '%s'",
-		task.ID, successCount, topic)
+		task.ID, successCount, task.Topic)
 	return nil
 }
 

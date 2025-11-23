@@ -3,6 +3,7 @@ package fleet
 
 import (
 	"context"
+	"log"
 	"sync"
 
 	"github.com/google/uuid"
@@ -36,14 +37,14 @@ const (
 )
 
 type device struct {
-	ID      uuid.UUID
-	broker  Broker // Interface for testability and flexibility
-	inbox   chan Task
-	topic   string             // Subscription topic for cleanup
-	ctx     context.Context    // Device lifecycle context
-	cancel  context.CancelFunc // Cancel function for shutdown
-	wg      sync.WaitGroup
-	handler TaskHandler // Injected device-specific task handler - strategy pattern gang of four
+	ID            uuid.UUID
+	broker        Broker // Interface for testability and flexibility
+	inbox         chan Task
+	subscriptions map[string]Subscriber
+	ctx           context.Context    // Device lifecycle context
+	cancel        context.CancelFunc // Cancel function for shutdown
+	wg            sync.WaitGroup
+	handler       TaskHandler // Injected device-specific task handler - strategy pattern gang of four
 }
 
 func (d *device) GetID() uuid.UUID {
@@ -58,7 +59,9 @@ func (d *device) Start(ctx context.Context) {
 
 func (d *device) Shutdown() {
 	d.cancel()
-	d.broker.Unsubscribe(d.topic, d.inbox)
+	for topic, ch := range d.subscriptions {
+		d.broker.Unsubscribe(topic, ch)
+	}
 	d.wg.Wait()
 }
 
@@ -75,4 +78,26 @@ func (d *device) listen(ctx context.Context) {
 			return //exit
 		}
 	}
+}
+
+// subscribe adds a topic subscription and starts a fan-in goroutine
+// to forward tasks from the topic channel to the device's inbox
+func (d *device) subscribe(topic string) {
+	ch := d.broker.Subscribe(topic)
+	d.subscriptions[topic] = ch
+
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		for {
+			select {
+			case task := <-ch:
+				log.Printf("Device %s received task from topic '%s'", d.ID, topic)
+				d.inbox <- task
+			case <-d.ctx.Done():
+				log.Printf("Device %s fan-in goroutine for topic '%s' shutting down", d.ID, topic)
+				return
+			}
+		}
+	}()
 }

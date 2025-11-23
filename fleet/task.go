@@ -18,6 +18,7 @@ const (
 type Task struct {
 	ID          uuid.UUID
 	Instruction string
+	Topic       string
 }
 
 type TaskHandler interface {
@@ -40,6 +41,7 @@ type TaskAck struct {
 	DeviceID  uuid.UUID
 	Timestamp time.Time
 	Error     string
+	Topic     string
 }
 
 func NewTaskAck(tid uuid.UUID, s TaskStatus, did uuid.UUID) TaskAck {
