@@ -3,6 +3,7 @@ package fleet
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 )
 
@@ -55,6 +56,21 @@ func (m *DeviceManager) Unregister(worker Worker) error {
 	worker.Shutdown()
 	delete(m.devices, key)
 	delete(m.cancels, key)
+	return nil
+}
+
+func (m *DeviceManager) UnregisterByWorkerId(uid string) error {
+
+	w, found := m.devices[uid]
+	if !found {
+		return fmt.Errorf("failed to unregister worker with id %s", uid)
+	}
+
+	err := m.Unregister(w)
+	if err != nil {
+		return err
+	}
+	log.Printf("unregistered device %s", uid)
 	return nil
 }
 

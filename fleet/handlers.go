@@ -1,7 +1,10 @@
 package fleet
 
 import (
+	"log"
+
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 )
 
 // FleetHandler TODO: add stateful service/dbrepo
@@ -39,4 +42,21 @@ func (h *FleetHandler) RegisterFleetDevice(c fiber.Ctx) error {
 
 func (h *FleetHandler) UnregisterFleetDevice(c fiber.Ctx) error {
 	uid := c.Params("uid")
+	parsedID, err := uuid.Parse(uid)
+	if err != nil {
+		log.Print("invalid uuid")
+	}
+	h.service.UnregisterDevice(parsedID)
+	return c.SendString(uid)
+}
+
+func (h *FleetHandler) PublishTask(c fiber.Ctx) error {
+	task := new(Task)
+
+	if err := c.Bind().JSON(task); err != nil {
+		return err
+	}
+
+	h.service.ProcessTask(*task)
+	return nil
 }

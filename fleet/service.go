@@ -20,18 +20,18 @@ type RegisterDeviceReq struct {
 //TODO: deviceRegistrar interface?
 
 type DeviceService struct {
-	registry *DeviceManager
-	broker   Broker
-	db       *gorm.DB
-	appCtx   context.Context
+	manager *DeviceManager
+	broker  Broker
+	db      *gorm.DB
+	appCtx  context.Context
 }
 
-func NewDeviceService(r *DeviceManager, b Broker, db *gorm.DB, appCtx context.Context) *DeviceService {
+func NewDeviceService(m *DeviceManager, b Broker, db *gorm.DB, appCtx context.Context) *DeviceService {
 	return &DeviceService{
-		registry: r,
-		broker:   b,
-		db:       db,
-		appCtx:   appCtx,
+		manager: m,
+		broker:  b,
+		db:      db,
+		appCtx:  appCtx,
 	}
 }
 
@@ -39,7 +39,7 @@ func (s *DeviceService) RegisterDevice(req RegisterDeviceReq) (string, error) {
 	switch req.DeviceType {
 	case "sprinkler":
 		sprinkler := NewSprinkler(s.broker, req.Zone)
-		err := s.registry.Register(sprinkler, req.Zone)
+		err := s.manager.Register(sprinkler, req.Zone)
 		if err != nil {
 			return "", err
 		}
@@ -56,7 +56,7 @@ func (s *DeviceService) RegisterDevice(req RegisterDeviceReq) (string, error) {
 		}
 		err = gorm.G[IrrigationDevice](s.db).Create(s.appCtx, d)
 		if err != nil {
-			s.registry.Unregister(sprinkler)
+			s.manager.Unregister(sprinkler)
 			return "", err
 		}
 		log.Printf("successfully created device: %s", d.Device.UUID)
@@ -67,9 +67,25 @@ func (s *DeviceService) RegisterDevice(req RegisterDeviceReq) (string, error) {
 	}
 }
 
-func (s *DeviceService) UnregisterDevice(deviceId uuid.UUID) {
-	// TODO: find generic devices with deviceId
+func (s *DeviceService) UnregisterDevice(deviceID uuid.UUID) error {
+	err := s.manager.UnregisterByWorkerId(deviceID.String())
+	if err != nil {
+		return err
+	}
 
-	//cascade delete device and any child device types it may represent like IrrigationDevice
-	// clear all subscriptions.
+	rowsDeleted, err := gorm.G[RegisteredDevice](s.db).Where("UUID = ?", deviceID).Delete(s.appCtx)
+	if err != nil {
+		log.Printf("device %s unregistered but failed to remove from db", deviceID)
+		return err
+	}
+	log.Printf("worker and underlying device types deleted from db, total rows: %d", rowsDeleted)
+	return nil
+}
+
+func (s *DeviceService) ProcessTask(task Task) error {
+	err := s.broker.Publish(s.appCtx, task)
+	if err != nil {
+		return err
+	}
+	return nil
 }

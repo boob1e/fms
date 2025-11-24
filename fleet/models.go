@@ -25,7 +25,7 @@ func (d *RegisteredDevice) BeforeCreate(tx *gorm.DB) error {
 
 type IrrigationDevice struct {
 	gorm.Model
-	RegisteredDeviceID int
-	Device             RegisteredDevice `gorm:"OnDelete:CASCADE"`
+	RegisteredDeviceID int              `gorm:"not null"`
+	Device             RegisteredDevice `gorm:"foreignKey:RegisteredDeviceID;references:ID;constraint:OnDelete:CASCADE"`
 	GallonsPerMinute   float32
 }
