@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -64,4 +65,11 @@ func (s *DeviceService) RegisterDevice(req RegisterDeviceReq) (string, error) {
 		log.Println("device type not recognized")
 		return "", fmt.Errorf("unsupported device type: %s", req.DeviceType)
 	}
+}
+
+func (s *DeviceService) UnregisterDevice(deviceId uuid.UUID) {
+	// TODO: find generic devices with deviceId
+
+	//cascade delete device and any child device types it may represent like IrrigationDevice
+	// clear all subscriptions.
 }

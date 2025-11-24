@@ -18,6 +18,7 @@ func NewFleetHandler(s *DeviceService) *FleetHandler {
 func RegisterFleetRoutes(router fiber.Router, handler *FleetHandler) {
 	fleet := router.Group("/fleet")
 	fleet.Post("/register", handler.RegisterFleetDevice)
+	fleet.Delete("/:uid", handler.UnregisterFleetDevice)
 }
 
 // RegisterFleetDevice connects a new device to the network
@@ -34,4 +35,8 @@ func (h *FleetHandler) RegisterFleetDevice(c fiber.Ctx) error {
 		"message": "device registered successfully",
 		"uuid":    id,
 	})
+}
+
+func (h *FleetHandler) UnregisterFleetDevice(c fiber.Ctx) error {
+	uid := c.Params("uid")
 }
