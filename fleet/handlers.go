@@ -22,6 +22,7 @@ func RegisterFleetRoutes(router fiber.Router, handler *FleetHandler) {
 	fleet := router.Group("/fleet")
 	fleet.Post("/register", handler.RegisterFleetDevice)
 	fleet.Delete("/:uid", handler.UnregisterFleetDevice)
+	fleet.Post("/task", handler.PublishTask)
 }
 
 // RegisterFleetDevice connects a new device to the network
