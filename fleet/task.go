@@ -58,3 +58,28 @@ func NewErrTaskAck(tid uuid.UUID, did uuid.UUID, errorMsg string) TaskAck {
 	ta.Error = errorMsg
 	return ta
 }
+
+type RetryConfig struct {
+	MaxRetries     int
+	InitialBackoff time.Duration
+	MaxBackoff     time.Duration
+	BackoffFactor  float64
+}
+
+func DefaultRetryConfig() RetryConfig {
+	return RetryConfig{
+		MaxRetries:     3,
+		InitialBackoff: 1 * time.Second,
+		MaxBackoff:     30 * time.Second,
+		BackoffFactor:  2.0,
+	}
+}
+
+type TaskRetryState struct {
+	Task        Task
+	Attempts    int
+	MaxRetries  int
+	LastAttempt time.Time
+	NextRetry   time.Time
+	LastError   string
+}

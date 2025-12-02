@@ -407,3 +407,360 @@ func TestMessageBroker_ConcurrentACKs(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// Phase 3: Retry Logic Tests
+// ============================================================================
+
+// TestCalculateBackoff verifies exponential backoff calculation
+func TestCalculateBackoff(t *testing.T) {
+	config := RetryConfig{
+		InitialBackoff: 1 * time.Second,
+		MaxBackoff:     30 * time.Second,
+		BackoffFactor:  2.0,
+	}
+
+	tests := []struct {
+		attempts int
+		expected time.Duration
+	}{
+		{0, 0},                  // No backoff for 0 attempts
+		{1, 2 * time.Second},    // 1s * 2^1 = 2s
+		{2, 4 * time.Second},    // 1s * 2^2 = 4s
+		{3, 8 * time.Second},    // 1s * 2^3 = 8s
+		{4, 16 * time.Second},   // 1s * 2^4 = 16s
+		{5, 30 * time.Second},   // 1s * 2^5 = 32s, capped at 30s
+		{10, 30 * time.Second},  // Should be capped at MaxBackoff
+	}
+
+	for _, tt := range tests {
+		result := calculateBackoff(tt.attempts, config)
+		if result != tt.expected {
+			t.Errorf("calculateBackoff(%d): expected %v, got %v", tt.attempts, tt.expected, result)
+		}
+	}
+}
+
+// TestRetryOnFirstFailure verifies that first failure adds task to retry queue
+func TestRetryOnFirstFailure(t *testing.T) {
+	broker := NewMessageBroker()
+	ctx := context.Background()
+
+	task := Task{
+		ID:          uuid.New(),
+		Instruction: "test-task",
+		Topic:       "test-topic",
+	}
+
+	// Subscribe to receive the task
+	sub := broker.Subscribe(task.Topic)
+	defer broker.Unsubscribe(task.Topic, sub)
+
+	// Publish task
+	err := broker.Publish(ctx, task)
+	if err != nil {
+		t.Fatalf("Failed to publish task: %v", err)
+	}
+
+	// Consume task
+	<-sub
+
+	// Send Failed ACK
+	deviceID := uuid.New()
+	ackChan := broker.GetACKChannel()
+	ackChan <- NewErrTaskAck(task.ID, deviceID, "simulated failure")
+
+	// Give processACKs time to process
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify task is in retry queue
+	broker.mu.RLock()
+	retryState, exists := broker.retryQueue[task.ID]
+	broker.mu.RUnlock()
+
+	if !exists {
+		t.Fatal("Task should be in retry queue after first failure")
+	}
+
+	if retryState.Attempts != 1 {
+		t.Errorf("Expected Attempts = 1, got %d", retryState.Attempts)
+	}
+
+	if retryState.LastError != "simulated failure" {
+		t.Errorf("Expected LastError = 'simulated failure', got %q", retryState.LastError)
+	}
+
+	if retryState.NextRetry.IsZero() {
+		t.Error("NextRetry should be set")
+	}
+}
+
+// TestRetryIncrementsAttempts verifies that subsequent failures increment attempts
+func TestRetryIncrementsAttempts(t *testing.T) {
+	broker := NewMessageBroker()
+	ctx := context.Background()
+
+	task := Task{
+		ID:          uuid.New(),
+		Instruction: "test-task",
+		Topic:       "test-topic",
+	}
+
+	sub := broker.Subscribe(task.Topic)
+	defer broker.Unsubscribe(task.Topic, sub)
+
+	// Publish task
+	broker.Publish(ctx, task)
+	<-sub
+
+	deviceID := uuid.New()
+	ackChan := broker.GetACKChannel()
+
+	// First failure
+	ackChan <- NewErrTaskAck(task.ID, deviceID, "failure 1")
+	time.Sleep(100 * time.Millisecond)
+
+	broker.mu.RLock()
+	retryState := broker.retryQueue[task.ID]
+	broker.mu.RUnlock()
+
+	if retryState.Attempts != 1 {
+		t.Errorf("After first failure: expected Attempts = 1, got %d", retryState.Attempts)
+	}
+
+	// Simulate retry by modifying NextRetry to past time
+	broker.mu.Lock()
+	if rs, ok := broker.retryQueue[task.ID]; ok {
+		rs.NextRetry = time.Now().Add(-2 * time.Second)
+	}
+	broker.mu.Unlock()
+
+	// Wait for processRetries to republish (it checks every 1 second)
+	// Give generous timeout to account for worst-case timing
+	select {
+	case <-sub:
+		// Task was republished - good!
+	case <-time.After(2500 * time.Millisecond):
+		t.Fatal("Task was not republished within 2.5 seconds")
+	}
+
+	// Second failure
+	ackChan <- NewErrTaskAck(task.ID, deviceID, "failure 2")
+	time.Sleep(100 * time.Millisecond)
+
+	broker.mu.RLock()
+	retryState, exists := broker.retryQueue[task.ID]
+	broker.mu.RUnlock()
+
+	if !exists {
+		t.Fatal("Task should still be in retry queue after second failure")
+	}
+
+	if retryState.Attempts != 2 {
+		t.Errorf("After second failure: expected Attempts = 2, got %d", retryState.Attempts)
+	}
+}
+
+// TestMaxRetriesExceeded verifies task removal after max retries
+func TestMaxRetriesExceeded(t *testing.T) {
+	broker := NewMessageBroker()
+	ctx := context.Background()
+
+	task := Task{
+		ID:          uuid.New(),
+		Instruction: "test-task",
+		Topic:       "test-topic",
+	}
+
+	sub := broker.Subscribe(task.Topic)
+	defer broker.Unsubscribe(task.Topic, sub)
+
+	broker.Publish(ctx, task)
+	<-sub
+
+	deviceID := uuid.New()
+	ackChan := broker.GetACKChannel()
+
+	// Simulate max retries (default is 3)
+	maxRetries := broker.retryConfig.MaxRetries
+
+	for i := 1; i <= maxRetries+1; i++ {
+		// Send failure ACK
+		ackChan <- NewErrTaskAck(task.ID, deviceID, "persistent failure")
+		time.Sleep(50 * time.Millisecond)
+
+		broker.mu.RLock()
+		_, exists := broker.retryQueue[task.ID]
+		broker.mu.RUnlock()
+
+		if i <= maxRetries {
+			// Should still be in retry queue
+			if !exists {
+				t.Errorf("After attempt %d: task should still be in retry queue", i)
+			}
+		} else {
+			// Should be removed after exceeding max retries
+			if exists {
+				t.Errorf("After attempt %d: task should be removed from retry queue", i)
+			}
+		}
+
+		// If not the last iteration, prepare for next retry
+		if i <= maxRetries {
+			broker.mu.Lock()
+			if retryState, ok := broker.retryQueue[task.ID]; ok {
+				retryState.NextRetry = time.Now().Add(-2 * time.Second)
+			}
+			broker.mu.Unlock()
+
+			// Wait for republish with generous timeout
+			select {
+			case <-sub:
+				// Republished
+			case <-time.After(2500 * time.Millisecond):
+				if i < maxRetries {
+					t.Fatalf("Task was not republished on attempt %d", i)
+				}
+			}
+		}
+	}
+}
+
+// TestCompleteRemovesFromRetryQueue verifies Complete ACK removes task from retry queue
+func TestCompleteRemovesFromRetryQueue(t *testing.T) {
+	broker := NewMessageBroker()
+	ctx := context.Background()
+
+	task := Task{
+		ID:          uuid.New(),
+		Instruction: "test-task",
+		Topic:       "test-topic",
+	}
+
+	sub := broker.Subscribe(task.Topic)
+	defer broker.Unsubscribe(task.Topic, sub)
+
+	broker.Publish(ctx, task)
+	<-sub
+
+	deviceID := uuid.New()
+	ackChan := broker.GetACKChannel()
+
+	// First failure - adds to retry queue
+	ackChan <- NewErrTaskAck(task.ID, deviceID, "initial failure")
+	time.Sleep(50 * time.Millisecond)
+
+	broker.mu.RLock()
+	_, exists := broker.retryQueue[task.ID]
+	broker.mu.RUnlock()
+
+	if !exists {
+		t.Fatal("Task should be in retry queue after failure")
+	}
+
+	// Simulate retry
+	broker.mu.Lock()
+	if rs, ok := broker.retryQueue[task.ID]; ok {
+		rs.NextRetry = time.Now().Add(-2 * time.Second)
+	}
+	broker.mu.Unlock()
+
+	// Wait for republish
+	select {
+	case <-sub:
+		// Republished successfully
+	case <-time.After(2500 * time.Millisecond):
+		t.Fatal("Task was not republished")
+	}
+
+	// Send Complete ACK
+	ackChan <- NewTaskAck(task.ID, Complete, deviceID)
+	time.Sleep(50 * time.Millisecond)
+
+	broker.mu.RLock()
+	_, exists = broker.retryQueue[task.ID]
+	broker.mu.RUnlock()
+
+	if exists {
+		t.Error("Task should be removed from retry queue after Complete ACK")
+	}
+
+	// Verify task status is Complete
+	state, err := broker.GetTaskStatus(task.ID)
+	if err != nil {
+		t.Fatalf("Failed to get task status: %v", err)
+	}
+	if state.Status != Complete {
+		t.Errorf("Expected status Complete, got %v", state.Status)
+	}
+}
+
+// TestRetryBackoffTiming verifies retry happens after calculated backoff
+func TestRetryBackoffTiming(t *testing.T) {
+	broker := NewMessageBroker()
+
+	// Use shorter backoff for faster test
+	broker.mu.Lock()
+	broker.retryConfig = RetryConfig{
+		MaxRetries:     3,
+		InitialBackoff: 500 * time.Millisecond,
+		MaxBackoff:     5 * time.Second,
+		BackoffFactor:  2.0,
+	}
+	broker.mu.Unlock()
+
+	ctx := context.Background()
+	task := Task{
+		ID:          uuid.New(),
+		Instruction: "test-task",
+		Topic:       "test-topic",
+	}
+
+	sub := broker.Subscribe(task.Topic)
+	defer broker.Unsubscribe(task.Topic, sub)
+
+	broker.Publish(ctx, task)
+	<-sub
+
+	deviceID := uuid.New()
+	ackChan := broker.GetACKChannel()
+
+	// Send failure
+	failTime := time.Now()
+	ackChan <- NewErrTaskAck(task.ID, deviceID, "test failure")
+	time.Sleep(50 * time.Millisecond)
+
+	// Task should be republished after backoff (500ms * 2^1 = 1s)
+	expectedBackoff := 1 * time.Second
+
+	select {
+	case <-sub:
+		retryTime := time.Now()
+		actualDelay := retryTime.Sub(failTime)
+
+		// Allow 500ms variance due to sleep intervals and processing time
+		if actualDelay < expectedBackoff || actualDelay > expectedBackoff+1500*time.Millisecond {
+			t.Errorf("Expected retry after ~%v, got %v", expectedBackoff, actualDelay)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Task was not retried within timeout")
+	}
+}
+
+// TestDefaultRetryConfig verifies default configuration values
+func TestDefaultRetryConfig(t *testing.T) {
+	config := DefaultRetryConfig()
+
+	if config.MaxRetries != 3 {
+		t.Errorf("Expected MaxRetries = 3, got %d", config.MaxRetries)
+	}
+	if config.InitialBackoff != 1*time.Second {
+		t.Errorf("Expected InitialBackoff = 1s, got %v", config.InitialBackoff)
+	}
+	if config.MaxBackoff != 30*time.Second {
+		t.Errorf("Expected MaxBackoff = 30s, got %v", config.MaxBackoff)
+	}
+	if config.BackoffFactor != 2.0 {
+		t.Errorf("Expected BackoffFactor = 2.0, got %f", config.BackoffFactor)
+	}
+}

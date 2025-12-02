@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"sync"
 	"time"
 
@@ -24,6 +25,8 @@ type MessageBroker struct {
 	subscribers map[string][]Subscriber // keys are topics
 	ackChan     chan TaskAck
 	taskStates  map[uuid.UUID]*TaskState
+	retryQueue  map[uuid.UUID]*TaskRetryState
+	retryConfig RetryConfig
 	mu          sync.RWMutex
 }
 
@@ -32,8 +35,12 @@ func NewMessageBroker() *MessageBroker {
 		subscribers: make(map[string][]Subscriber),
 		ackChan:     make(chan TaskAck, 100),
 		taskStates:  make(map[uuid.UUID]*TaskState),
+		retryQueue:  make(map[uuid.UUID]*TaskRetryState),
+		retryConfig: DefaultRetryConfig(),
 	}
 	go b.processACKs()
+	go b.processRetries()
+	// TODO(human): Start processRetries() goroutine
 
 	return b
 }
@@ -141,10 +148,39 @@ func (b *MessageBroker) processACKs() {
 					now := ack.Timestamp
 					state.StartedAt = &now
 				}
-			case Complete, Failed:
+			case Complete:
 				if state.CompletedAt == nil {
 					now := ack.Timestamp
 					state.CompletedAt = &now
+				}
+				delete(b.retryQueue, ack.TaskID)
+			case Failed:
+				t, ok := b.retryQueue[ack.TaskID]
+				if !ok {
+
+					tr := &TaskRetryState{
+						Attempts:    1,
+						Task:        state.Task,
+						MaxRetries:  b.retryConfig.MaxRetries,
+						LastAttempt: time.Now(),
+						LastError:   ack.Error,
+					}
+					backoff := calculateBackoff(tr.Attempts, b.retryConfig)
+					tr.NextRetry = time.Now().Add(backoff)
+					b.retryQueue[ack.TaskID] = tr
+					log.Printf("[RETRY] Task %s failed, scheduling retry attempt %d in %s", ack.TaskID, tr.Attempts+1, tr.NextRetry.String())
+				} else {
+					t.Attempts++
+					maxAttemptsExceeded := t.Attempts > b.retryConfig.MaxRetries
+					if maxAttemptsExceeded {
+						log.Printf("[RETRY] Task %s exceeded max retries (%d), giving up", ack.TaskID, b.retryConfig.MaxRetries)
+						delete(b.retryQueue, ack.TaskID)
+						break
+					}
+					backoff := calculateBackoff(t.Attempts, b.retryConfig)
+					nextRetry := time.Now().Add(backoff)
+					t.NextRetry = nextRetry
+					log.Printf("[RETRY] Task %s failed, scheduling retry attempt %d in %s", ack.TaskID, t.Attempts+1, t.NextRetry.String())
 				}
 			}
 		} else {
@@ -164,4 +200,48 @@ func (b *MessageBroker) GetTaskStatus(taskID uuid.UUID) (*TaskState, error) {
 	}
 	stateCopy := *ts
 	return &stateCopy, nil
+}
+
+func calculateBackoff(attempts int, config RetryConfig) time.Duration {
+	if attempts == 0 {
+		return time.Second * 0
+	}
+	backoff := math.Pow(config.BackoffFactor, float64(attempts))
+	backoff = backoff * float64(config.InitialBackoff)
+	backoff = math.Min(backoff, float64(config.MaxBackoff))
+
+	return time.Duration(backoff)
+}
+
+func (b *MessageBroker) processRetries() {
+	for {
+		time.Sleep(time.Second * 1)
+
+		// Collect tasks to retry (while holding lock)
+		b.mu.Lock()
+		var tasksToRetry []Task
+		var keysToDelete []uuid.UUID
+
+		for key, t := range b.retryQueue {
+			if t.NextRetry.After(time.Now()) {
+				continue
+			}
+			tasksToRetry = append(tasksToRetry, t.Task)
+			keysToDelete = append(keysToDelete, key)
+		}
+		b.mu.Unlock()
+
+		// Publish tasks (without holding lock to avoid deadlock)
+		for i, task := range tasksToRetry {
+			ctx := context.Background()
+			b.Publish(ctx, task)
+
+			// Remove from retry queue after publish
+			b.mu.Lock()
+			delete(b.retryQueue, keysToDelete[i])
+			b.mu.Unlock()
+
+			log.Printf("[RETRY] Republishing task %s", task.ID)
+		}
+	}
 }
