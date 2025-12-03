@@ -184,8 +184,14 @@ func TestMessageBroker_ProcessACKs_Failed(t *testing.T) {
 	if state.Status != Failed {
 		t.Errorf("Expected status Failed, got %v", state.Status)
 	}
-	if state.CompletedAt == nil {
-		t.Error("CompletedAt should be set after Failed ACK")
+
+	// With Phase 3, failed tasks go to retry queue (not completed)
+	broker.mu.RLock()
+	_, inRetryQueue := broker.retryQueue[task.ID]
+	broker.mu.RUnlock()
+
+	if !inRetryQueue {
+		t.Error("Failed task should be in retry queue")
 	}
 }
 
