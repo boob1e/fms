@@ -56,7 +56,6 @@ func TestNewErrTaskAck(t *testing.T) {
 func TestMessageBroker_GetACKChannel(t *testing.T) {
 	broker := NewMessageBroker()
 	defer broker.Shutdown()
-	defer close(broker.ackChan)
 
 	ackChan := broker.GetACKChannel()
 
@@ -78,7 +77,6 @@ func TestMessageBroker_GetACKChannel(t *testing.T) {
 func TestMessageBroker_ProcessACKs(t *testing.T) {
 	broker := NewMessageBroker()
 	defer broker.Shutdown()
-	defer close(broker.ackChan)
 
 	// Publish a task to initialize state
 	task := Task{
@@ -150,7 +148,6 @@ func TestMessageBroker_ProcessACKs(t *testing.T) {
 func TestMessageBroker_ProcessACKs_Failed(t *testing.T) {
 	broker := NewMessageBroker()
 	defer broker.Shutdown()
-	defer close(broker.ackChan)
 
 	// Publish a task
 	task := Task{
@@ -202,7 +199,6 @@ func TestMessageBroker_ProcessACKs_Failed(t *testing.T) {
 func TestMessageBroker_ProcessACKs_UnknownTask(t *testing.T) {
 	broker := NewMessageBroker()
 	defer broker.Shutdown()
-	defer close(broker.ackChan)
 
 	unknownTaskID := uuid.New()
 	deviceID := uuid.New()
@@ -225,7 +221,6 @@ func TestMessageBroker_ProcessACKs_UnknownTask(t *testing.T) {
 func TestMessageBroker_GetTaskStatus(t *testing.T) {
 	broker := NewMessageBroker()
 	defer broker.Shutdown()
-	defer close(broker.ackChan)
 
 	// Test non-existent task
 	_, err := broker.GetTaskStatus(uuid.New())
@@ -275,7 +270,6 @@ func TestMessageBroker_GetTaskStatus(t *testing.T) {
 func TestSprinkler_ACK_Lifecycle(t *testing.T) {
 	broker := NewMessageBroker()
 	defer broker.Shutdown()
-	defer close(broker.ackChan)
 
 	sprinkler := NewSprinkler(broker, "a")
 	sprinkler.Start(context.Background())
@@ -334,7 +328,6 @@ func TestSprinkler_ACK_Lifecycle(t *testing.T) {
 func TestSprinkler_ACK_UnknownInstruction(t *testing.T) {
 	broker := NewMessageBroker()
 	defer broker.Shutdown()
-	defer close(broker.ackChan)
 
 	sprinkler := NewSprinkler(broker, "b")
 	sprinkler.Start(context.Background())
@@ -368,7 +361,6 @@ func TestSprinkler_ACK_UnknownInstruction(t *testing.T) {
 func TestMessageBroker_ConcurrentACKs(t *testing.T) {
 	broker := NewMessageBroker()
 	defer broker.Shutdown()
-	defer close(broker.ackChan)
 
 	ctx := context.Background()
 	sub := broker.Subscribe("test-topic")
@@ -781,5 +773,250 @@ func TestDefaultRetryConfig(t *testing.T) {
 	}
 	if config.BackoffFactor != 2.0 {
 		t.Errorf("Expected BackoffFactor = 2.0, got %f", config.BackoffFactor)
+	}
+}
+
+// TestTaskMovesToDLQAfterMaxRetries verifies tasks enter DLQ after exhausting retries
+func TestTaskMovesToDLQAfterMaxRetries(t *testing.T) {
+	broker := NewMessageBroker()
+	defer broker.Shutdown()
+	ctx := context.Background()
+
+	task := Task{
+		ID:          uuid.New(),
+		Instruction: "test-task",
+		Topic:       "test-topic",
+	}
+
+	sub := broker.Subscribe(task.Topic)
+	defer broker.Unsubscribe(task.Topic, sub)
+
+	err := broker.Publish(ctx, task)
+	if err != nil {
+		t.Fatalf("Failed to publish task: %v", err)
+	}
+
+	<-sub
+
+	deviceID := uuid.New()
+	ackChan := broker.GetACKChannel()
+
+	for i := 1; i <= broker.retryConfig.MaxRetries+1; i++ {
+		ackChan <- NewErrTaskAck(task.ID, deviceID, "test failure")
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	dlqTasks := broker.GetDLQTasks()
+	if len(dlqTasks) != 1 {
+		t.Fatalf("Expected 1 task in DLQ, got %d", len(dlqTasks))
+	}
+
+	entry := dlqTasks[0]
+	if entry.Task.ID != task.ID {
+		t.Errorf("Expected task ID %v in DLQ, got %v", task.ID, entry.Task.ID)
+	}
+	if entry.Attempts != broker.retryConfig.MaxRetries+1 {
+		t.Errorf("Expected %d attempts, got %d", broker.retryConfig.MaxRetries+1, entry.Attempts)
+	}
+	if entry.LastError != "test failure" {
+		t.Errorf("Expected LastError 'test failure', got %q", entry.LastError)
+	}
+	if entry.FailureReason != "attempts exceeded" {
+		t.Errorf("Expected FailureReason 'attempts exceeded', got %q", entry.FailureReason)
+	}
+	if entry.AddedAt.IsZero() {
+		t.Error("Expected AddedAt to be set")
+	}
+}
+
+// TestGetDLQTasksReturnsCopy verifies GetDLQTasks returns a copy
+func TestGetDLQTasksReturnsCopy(t *testing.T) {
+	broker := NewMessageBroker()
+	defer broker.Shutdown()
+
+	broker.dlqMu.Lock()
+	broker.dlq = []DLQEntry{
+		{
+			Task:          Task{ID: uuid.New(), Instruction: "task1", Topic: "test"},
+			FailureReason: "test",
+			Attempts:      4,
+			LastError:     "error1",
+			AddedAt:       time.Now(),
+		},
+		{
+			Task:          Task{ID: uuid.New(), Instruction: "task2", Topic: "test"},
+			FailureReason: "test",
+			Attempts:      4,
+			LastError:     "error2",
+			AddedAt:       time.Now(),
+		},
+	}
+	broker.dlqMu.Unlock()
+
+	tasks1 := broker.GetDLQTasks()
+	tasks2 := broker.GetDLQTasks()
+
+	if len(tasks1) != 2 {
+		t.Fatalf("Expected 2 tasks, got %d", len(tasks1))
+	}
+
+	tasks1[0].LastError = "modified"
+
+	if tasks2[0].LastError == "modified" {
+		t.Error("Modifying returned slice affected internal state")
+	}
+}
+
+// TestRequeueFromDLQ verifies task can be requeued from DLQ
+func TestRequeueFromDLQ(t *testing.T) {
+	broker := NewMessageBroker()
+	defer broker.Shutdown()
+
+	taskID := uuid.New()
+	broker.dlqMu.Lock()
+	broker.dlq = []DLQEntry{
+		{
+			Task:          Task{ID: taskID, Instruction: "test-task", Topic: "test-topic"},
+			FailureReason: "max retries exceeded",
+			Attempts:      4,
+			LastError:     "test error",
+			AddedAt:       time.Now(),
+		},
+	}
+	broker.dlqMu.Unlock()
+
+	err := broker.RequeueFromDLQ(taskID)
+	if err != nil {
+		t.Fatalf("Failed to requeue from DLQ: %v", err)
+	}
+
+	dlqTasks := broker.GetDLQTasks()
+	if len(dlqTasks) != 0 {
+		t.Errorf("Expected DLQ to be empty after requeue, got %d tasks", len(dlqTasks))
+	}
+
+	broker.mu.RLock()
+	retryState, exists := broker.retryQueue[taskID]
+	broker.mu.RUnlock()
+
+	if !exists {
+		t.Fatal("Task not found in retry queue after requeue")
+	}
+
+	if retryState.Task.ID != taskID {
+		t.Errorf("Expected task ID %v in retry queue, got %v", taskID, retryState.Task.ID)
+	}
+	if retryState.Attempts != 0 {
+		t.Errorf("Expected Attempts = 0 for requeued task, got %d", retryState.Attempts)
+	}
+	if retryState.LastError != "test error" {
+		t.Errorf("Expected LastError preserved, got %q", retryState.LastError)
+	}
+}
+
+// TestRequeueFromDLQNotFound verifies error when task not in DLQ
+func TestRequeueFromDLQNotFound(t *testing.T) {
+	broker := NewMessageBroker()
+	defer broker.Shutdown()
+
+	nonExistentID := uuid.New()
+	err := broker.RequeueFromDLQ(nonExistentID)
+
+	if err == nil {
+		t.Fatal("Expected error when requeuing non-existent task, got nil")
+	}
+}
+
+// TestRemoveFromDLQ verifies task can be removed from DLQ
+func TestRemoveFromDLQ(t *testing.T) {
+	broker := NewMessageBroker()
+	defer broker.Shutdown()
+
+	task1ID := uuid.New()
+	task2ID := uuid.New()
+
+	broker.dlqMu.Lock()
+	broker.dlq = []DLQEntry{
+		{
+			Task:          Task{ID: task1ID, Instruction: "task1", Topic: "test"},
+			FailureReason: "test",
+			Attempts:      4,
+			LastError:     "error1",
+			AddedAt:       time.Now(),
+		},
+		{
+			Task:          Task{ID: task2ID, Instruction: "task2", Topic: "test"},
+			FailureReason: "test",
+			Attempts:      4,
+			LastError:     "error2",
+			AddedAt:       time.Now(),
+		},
+	}
+	broker.dlqMu.Unlock()
+
+	err := broker.RemoveFromDLQ(task1ID)
+	if err != nil {
+		t.Fatalf("Failed to remove from DLQ: %v", err)
+	}
+
+	dlqTasks := broker.GetDLQTasks()
+	if len(dlqTasks) != 1 {
+		t.Fatalf("Expected 1 task in DLQ after removal, got %d", len(dlqTasks))
+	}
+
+	if dlqTasks[0].Task.ID != task2ID {
+		t.Errorf("Expected task2 to remain in DLQ, got task ID %v", dlqTasks[0].Task.ID)
+	}
+}
+
+// TestRemoveFromDLQNotFound verifies error when task not in DLQ
+func TestRemoveFromDLQNotFound(t *testing.T) {
+	broker := NewMessageBroker()
+	defer broker.Shutdown()
+
+	nonExistentID := uuid.New()
+	err := broker.RemoveFromDLQ(nonExistentID)
+
+	if err == nil {
+		t.Fatal("Expected error when removing non-existent task, got nil")
+	}
+}
+
+// TestClearDLQ verifies all tasks can be cleared from DLQ
+func TestClearDLQ(t *testing.T) {
+	broker := NewMessageBroker()
+	defer broker.Shutdown()
+
+	broker.dlqMu.Lock()
+	broker.dlq = []DLQEntry{
+		{
+			Task:          Task{ID: uuid.New(), Instruction: "task1", Topic: "test"},
+			FailureReason: "test",
+			Attempts:      4,
+			LastError:     "error1",
+			AddedAt:       time.Now(),
+		},
+		{
+			Task:          Task{ID: uuid.New(), Instruction: "task2", Topic: "test"},
+			FailureReason: "test",
+			Attempts:      4,
+			LastError:     "error2",
+			AddedAt:       time.Now(),
+		},
+		{
+			Task:          Task{ID: uuid.New(), Instruction: "task3", Topic: "test"},
+			FailureReason: "test",
+			Attempts:      4,
+			LastError:     "error3",
+			AddedAt:       time.Now(),
+		},
+	}
+	broker.dlqMu.Unlock()
+
+	broker.ClearDLQ()
+
+	dlqTasks := broker.GetDLQTasks()
+	if len(dlqTasks) != 0 {
+		t.Errorf("Expected DLQ to be empty after clear, got %d tasks", len(dlqTasks))
 	}
 }

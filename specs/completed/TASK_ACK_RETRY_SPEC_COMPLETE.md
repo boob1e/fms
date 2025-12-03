@@ -394,12 +394,16 @@ log.Printf("[DLQ] Task %s: Max retries exceeded, moved to DLQ", taskID)
   - [x] Fixed deadlock by using collect-then-process pattern (avoid calling Publish under lock)
   - [x] Tasks remain in retry queue for attempt tracking; removed on Complete or max retries
 
-- [ ] **Phase 4**: Dead Letter Queue
-  - [ ] Add DLQ to broker
-  - [ ] Implement DLQ management methods
-  - [ ] Move exhausted retries to DLQ
-  - [ ] Add DLQ logging
-  - [ ] Write tests
+- [x] **Phase 4**: Dead Letter Queue ✅ COMPLETE
+  - [x] Add DLQ to broker (`broker.go:43-44`, slice-based storage with dedicated mutex)
+  - [x] Implement DLQ management methods (`broker.go:291-350`)
+    - [x] GetDLQTasks() - Thread-safe copy of DLQ entries
+    - [x] RequeueFromDLQ() - Move task back to retry queue (collect-then-process pattern)
+    - [x] RemoveFromDLQ() - Acknowledge permanent failure
+    - [x] ClearDLQ() - Clear entire DLQ
+  - [x] Move exhausted retries to DLQ (`broker.go:207-216` in processACK)
+  - [x] Add DLQ logging (max retries exceeded logged at line 205)
+  - [x] Write tests (7 comprehensive tests in `broker_test.go:757-972`)
 
 ## Success Criteria
 
@@ -472,3 +476,42 @@ Critical concurrency issues were discovered and resolved during implementation:
    - Solution: Convert to float64 for calculations, convert back to Duration
    - Pattern: `time.Duration(float64(InitialBackoff) * math.Pow(factor, attempts))`
    - Impact: Correct exponential backoff timing
+
+### Phase 4 Implementation Improvements
+
+Critical concurrency and design patterns discovered during DLQ implementation:
+
+1. **Lock Ordering to Prevent Deadlock** (`broker.go:299-331`)
+   - Issue: RequeueFromDLQ needed to access both dlq (protected by dlqMu) and retryQueue (protected by mu)
+   - Problem: Holding multiple locks simultaneously risks deadlock if different code paths acquire locks in different orders
+   - Solution: Collect-then-process pattern - collect data while holding dlqMu, release it, then acquire mu
+   - Pattern: Always acquire locks in consistent order, or better yet, hold only one lock at a time
+   - Impact: Prevents deadlock scenarios in concurrent operations
+
+2. **Defensive Copying for Thread Safety** (`broker.go:291-297`)
+   - Issue: GetDLQTasks() must return DLQ snapshot without exposing internal slice
+   - Problem: Returning internal slice allows external code to modify it, bypassing mutex protection
+   - Solution: Create copy of slice while holding read lock, return the copy
+   - Pattern: Always return copies of internal data structures, never expose mutable internals
+   - Impact: Maintains encapsulation and thread safety guarantees
+
+3. **Slice-Based DLQ Trade-offs** (`broker.go:43-44`)
+   - Decision: Used slice instead of map for DLQ storage
+   - Trade-off: O(n) search for RequeueFromDLQ and RemoveFromDLQ operations
+   - Benefit: Preserves chronological ordering (FIFO-like semantics) for observability
+   - Justification: DLQ should be small (most tasks succeed after retries), so O(n) acceptable
+   - Alternative considered: Map would give O(1) lookup but lose insertion order
+
+4. **Separate Mutex for Separate Concerns** (`broker.go:39, 44`)
+   - Pattern: Used separate dlqMu for DLQ operations instead of reusing broker's main mu
+   - Benefit: Reduces lock contention - DLQ operations don't block retry queue operations
+   - Benefit: Clearer ownership - each mutex protects a distinct resource
+   - Pattern: "One mutex per logically independent data structure"
+   - Impact: Better concurrency and clearer code reasoning
+
+5. **Double-Close Channel Prevention** (`broker.go:242-251`, test cleanup)
+   - Issue: Tests had both `defer broker.Shutdown()` and `defer close(broker.ackChan)`
+   - Problem: Shutdown already closes ackChan, causing "close of closed channel" panic
+   - Solution: Only Shutdown() should close channels it manages
+   - Pattern: Resource cleanup should happen in one canonical place (usually the creator/owner)
+   - Impact: Prevents runtime panics from double-close errors

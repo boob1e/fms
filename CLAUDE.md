@@ -59,6 +59,14 @@ When providing suggestions, code examples, or discussing architecture:
 - Favor the approach used in `net/http`, `database/sql`, `context` packages
 - Prioritize readability and maintainability over brevity
 
+## Git and Version Control
+
+**IMPORTANT: Do NOT create git commits on my behalf**
+- I will handle all git commits myself
+- You may suggest what should be committed
+- You may help draft commit messages
+- But you should NEVER run `git commit` commands
+
 ### Architecture Patterns
 - Strategy Pattern for polymorphic behavior (self-injection)
 - Three-layer pattern: Domain → Orchestration → Routing
@@ -80,13 +88,25 @@ When providing suggestions, code examples, or discussing architecture:
 
 ## Active Work
 
-See `TASK_ACK_RETRY_SPEC.md` for current implementation phases.
+**All Core Features Complete!**
 - Phase 1: ✅ Complete (ACK/NACK Infrastructure)
 - Phase 2: ✅ Complete (Completion Tracking)
-- Phase 3: Paused (Retry Logic)
+- Phase 3: ✅ Complete (Retry Logic with Exponential Backoff)
+- Phase 4: ✅ Complete (Dead Letter Queue)
+
+See `specs/completed/TASK_ACK_RETRY_SPEC_COMPLETE.md` for implementation details.
 
 ## Documentation Files
 
-- `PUBSUB_IMPROVEMENTS.md` - Overall pub/sub system roadmap
-- `TASK_ACK_RETRY_SPEC.md` - ACK/retry system implementation spec
+**Active Specs:**
+- `CONSTRUCTION_PATTERNS_SPEC.md` - Construction patterns for device initialization
+- `DATABASE_MODELING_SPEC.md` - Database schema and modeling
+
+**Completed Specs:** (in `specs/completed/`)
+- `TASK_ACK_RETRY_SPEC_COMPLETE.md` - ACK/retry/DLQ implementation phases
+- `MULTI_TOPIC_SUBSCRIPTION_SPEC_COMPLETE.md` - Multi-topic subscription pattern
+- `PUBSUB_IMPROVEMENTS_COMPLETE.md` - Pub/sub system enhancements
+
+**Reference Documentation:**
 - `SELF_INJECTION_PATTERN.md` - Strategy pattern explanation
+- `README.md` - Project overview and learning journey

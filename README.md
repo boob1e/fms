@@ -50,47 +50,70 @@ This "Learn by Doing" approach helps me deeply understand:
 3. **Concurrent map panic** - Iterating `retryQueue` without lock while `processACKs` modified it
    - **Solution:** Hold lock for entire iteration while collecting tasks to retry
 
-### Phase 4: Dead Letter Queue (🚧 Planned)
-- Move tasks that exhaust retries to DLQ for manual investigation
-- Query and management APIs for DLQ
-- Requeue failed tasks manually
+### Phase 4: Dead Letter Queue (✅ Complete)
+- **DLQ storage** - Slice-based storage with dedicated mutex for permanently failed tasks
+- **Management APIs** - GetDLQTasks, RequeueFromDLQ, RemoveFromDLQ, ClearDLQ
+- **Automatic DLQ population** - Tasks exceeding max retries moved to DLQ with failure metadata
+- **7 comprehensive tests** - Cover DLQ operations, thread safety, and requeue functionality
+
+**Key Learning:** Lock ordering to prevent deadlock, defensive copying for thread safety, separate mutexes for independent data structures, resource cleanup ownership patterns
+
+#### Critical Bugs I Found & Fixed
+
+1. **Lock ordering deadlock** - RequeueFromDLQ held dlqMu then tried to acquire mu while other code did opposite
+   - **Solution:** Collect-then-process - release dlqMu before acquiring mu (never hold both simultaneously)
+
+2. **Unsafe slice exposure** - GetDLQTasks returned internal slice, allowing external modification
+   - **Solution:** Always return defensive copies; never expose internal mutable state
+
+3. **Double-close panic** - Tests closed ackChan AND called Shutdown() which also closes it
+   - **Solution:** Resource cleanup in one canonical place (Shutdown owns channel lifecycle)
+
+4. **Missing read locks** - Accessed DLQ slice during iteration without holding mutex
+   - **Solution:** Even reads need locks when data can be modified concurrently
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                     MessageBroker                        │
-│  ┌────────────┐  ┌────────────┐  ┌──────────────────┐   │
-│  │Task Queue  │  │ ACK Chan   │  │  Retry Queue     │   │
-│  └────────────┘  └────────────┘  └──────────────────┘   │
-│         │              ▲                    ▲            │
-│         │ Publish      │ ACK                │            │
-│         ▼              │                    │            │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │  processACKs()        processRetries()           │   │
-│  │  - Track lifecycle    - Check every 1s           │   │
-│  │  - Manage retries     - Republish tasks          │   │
-│  └──────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────┘
-         │                                    ▲
-         │ Task                               │ ACK
-         ▼                                    │
-┌───────────────────────────────────────────────────────┐
-│              FleetDevice (Sprinkler)                  │
-│  ┌──────────────┐         ┌─────────────────────┐    │
-│  │  HandleTask  │────────▶│  Send ACK to Broker │    │
-│  └──────────────┘         └─────────────────────┘    │
-└───────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                          MessageBroker                               │
+│  ┌────────────┐  ┌────────────┐  ┌──────────────┐  ┌────────────┐  │
+│  │Task Queue  │  │ ACK Chan   │  │ Retry Queue  │  │    DLQ     │  │
+│  │            │  │            │  │  (backoff)   │  │ (permanent)│  │
+│  └────────────┘  └────────────┘  └──────────────┘  └────────────┘  │
+│         │              ▲                 ▲               ▲           │
+│         │ Publish      │ ACK             │               │           │
+│         ▼              │                 │               │           │
+│  ┌────────────────────────────────────────────────────────────────┐ │
+│  │  processACKs()            processRetries()                     │ │
+│  │  - Track lifecycle        - Check every 1s                     │ │
+│  │  - Manage retries         - Republish tasks                    │ │
+│  │  - Move to DLQ on max     - Exponential backoff                │ │
+│  └────────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────────┘
+         │                                         ▲
+         │ Task                                    │ ACK
+         ▼                                         │
+┌──────────────────────────────────────────────────────────────────┐
+│                   FleetDevice (Sprinkler)                        │
+│  ┌──────────────┐              ┌─────────────────────┐           │
+│  │  HandleTask  │─────────────▶│  Send ACK to Broker │           │
+│  │              │              │  (Running/Complete) │           │
+│  └──────────────┘              └─────────────────────┘           │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ## Running Tests
 
 ```bash
-# All tests
+# All tests (26 total: ACKs, retry logic, DLQ)
 go test ./fleet/
 
 # Retry logic tests only
 go test -v -run "Test.*Retry|TestCalculateBackoff" ./fleet/
+
+# DLQ tests only
+go test -v -run "Test.*DLQ" ./fleet/
 
 # With coverage
 go test -cover ./fleet/
@@ -100,16 +123,24 @@ go test -cover ./fleet/
 
 ```
 fleet/
-├── broker.go           # MessageBroker implementation
-├── task.go            # Task, TaskAck, TaskState, RetryConfig types
+├── broker.go           # MessageBroker implementation (ACK, retry, DLQ)
+├── task.go            # Task, TaskAck, TaskState, RetryConfig, DLQEntry types
 ├── device_agent.go    # Base device with self-injection pattern
 ├── sprinkler.go       # Example TaskHandler implementation
-└── broker_test.go     # Comprehensive test suite
+└── broker_test.go     # Comprehensive test suite (26 tests)
 
-docs/
-├── TASK_ACK_RETRY_SPEC.md       # Implementation phases & decisions
-├── PUBSUB_IMPROVEMENTS.md       # Roadmap
-└── SELF_INJECTION_PATTERN.md   # Strategy pattern explanation
+specs/
+└── completed/         # ✅ Completed implementation specs
+    ├── TASK_ACK_RETRY_SPEC_COMPLETE.md
+    ├── MULTI_TOPIC_SUBSCRIPTION_SPEC_COMPLETE.md
+    └── PUBSUB_IMPROVEMENTS_COMPLETE.md
+
+Root documentation:
+├── README.md                      # Project overview & learning journey
+├── CLAUDE.md                      # Claude Code preferences & configuration
+├── SELF_INJECTION_PATTERN.md     # Strategy pattern reference
+├── CONSTRUCTION_PATTERNS_SPEC.md  # Device construction patterns (active)
+└── DATABASE_MODELING_SPEC.md      # Database schema design (active)
 ```
 
 ## Design Patterns I've Learned
@@ -149,6 +180,25 @@ for _, task := range tasksToRetry {
 // Parent context → device context → task context
 deviceCtx := context.WithCancel(parentCtx)
 taskCtx := context.WithTimeout(deviceCtx, 30*time.Second)
+```
+
+### 4. Defensive Copying (Thread Safety)
+```go
+// WRONG - exposes internal state
+func (b *MessageBroker) GetDLQTasks() []DLQEntry {
+    b.dlqMu.RLock()
+    defer b.dlqMu.RUnlock()
+    return b.dlq  // ❌ Caller can modify internal slice!
+}
+
+// CORRECT - returns copy
+func (b *MessageBroker) GetDLQTasks() []DLQEntry {
+    b.dlqMu.RLock()
+    defer b.dlqMu.RUnlock()
+    cpy := make([]DLQEntry, len(b.dlq))
+    copy(cpy, b.dlq)
+    return cpy  // ✅ Safe - external modifications don't affect internal state
+}
 ```
 
 ## What I'm Learning About

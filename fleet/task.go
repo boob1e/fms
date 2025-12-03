@@ -83,3 +83,11 @@ type TaskRetryState struct {
 	NextRetry   time.Time
 	LastError   string
 }
+
+type DLQEntry struct {
+	Task          Task
+	FailureReason string
+	Attempts      int
+	LastError     string
+	AddedAt       time.Time
+}

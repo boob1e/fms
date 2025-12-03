@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -22,6 +23,13 @@ type Broker interface {
 	Shutdown()
 }
 
+type DLQManager interface {
+	GetDLQTasks() []DLQEntry
+	RequeueFromDLQ(taskID uuid.UUID) error
+	RemoveFromDLQ(taskID uuid.UUID) error
+	ClearDLQ()
+}
+
 type MessageBroker struct {
 	subscribers map[string][]Subscriber // keys are topics
 	ackChan     chan TaskAck
@@ -32,6 +40,8 @@ type MessageBroker struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
+	dlq         []DLQEntry
+	dlqMu       sync.RWMutex
 }
 
 func NewMessageBroker() *MessageBroker {
@@ -177,7 +187,6 @@ func (b *MessageBroker) processACK(ack TaskAck) {
 		case Failed:
 			t, ok := b.retryQueue[ack.TaskID]
 			if !ok {
-
 				tr := &TaskRetryState{
 					Attempts:    1,
 					Task:        state.Task,
@@ -195,6 +204,16 @@ func (b *MessageBroker) processACK(ack TaskAck) {
 				if maxAttemptsExceeded {
 					log.Printf("[RETRY] Task %s exceeded max retries (%d), giving up", ack.TaskID, b.retryConfig.MaxRetries)
 					delete(b.retryQueue, ack.TaskID)
+					entry := DLQEntry{
+						Task:          t.Task,
+						FailureReason: "attempts exceeded",
+						Attempts:      t.Attempts,
+						LastError:     t.LastError,
+						AddedAt:       time.Now(),
+					}
+					b.dlqMu.Lock()
+					b.dlq = append(b.dlq, entry)
+					b.dlqMu.Unlock()
 					break
 				}
 				backoff := calculateBackoff(t.Attempts, b.retryConfig)
@@ -245,30 +264,87 @@ func calculateBackoff(attempts int, config RetryConfig) time.Duration {
 func (b *MessageBroker) initRetryBackgroundProcess() {
 	defer b.wg.Done()
 	for {
-		time.Sleep(time.Second * 1)
-
-		b.mu.Lock()
-		var tasksToRetry []Task
-		var keysToDelete []uuid.UUID
-
-		for key, t := range b.retryQueue {
-			if t.NextRetry.After(time.Now()) {
-				continue
-			}
-			tasksToRetry = append(tasksToRetry, t.Task)
-			keysToDelete = append(keysToDelete, key)
-		}
-		b.mu.Unlock()
-
-		for i, task := range tasksToRetry {
-			ctx := context.Background()
-			b.Publish(ctx, task)
-
+		select {
+		case <-b.ctx.Done():
+			return
+		case <-time.After(1 * time.Second):
 			b.mu.Lock()
-			delete(b.retryQueue, keysToDelete[i])
+			var tasksToRetry []Task
+
+			for _, t := range b.retryQueue {
+				if t.NextRetry.After(time.Now()) {
+					continue
+				}
+				tasksToRetry = append(tasksToRetry, t.Task)
+			}
 			b.mu.Unlock()
 
-			log.Printf("[RETRY] Republishing task %s", task.ID)
+			for _, task := range tasksToRetry {
+				ctx := context.Background()
+				b.Publish(ctx, task)
+				log.Printf("[RETRY] Republishing task %s", task.ID)
+			}
 		}
 	}
+}
+
+func (b *MessageBroker) GetDLQTasks() []DLQEntry {
+	b.dlqMu.RLock()
+	defer b.dlqMu.RUnlock()
+	cpy := make([]DLQEntry, len(b.dlq))
+	copy(cpy, b.dlq)
+	return cpy
+}
+
+func (b *MessageBroker) RequeueFromDLQ(taskID uuid.UUID) error {
+	b.dlqMu.Lock()
+
+	var found bool
+	var task Task
+	var lastError string
+	for i, value := range b.dlq {
+		if value.Task.ID == taskID {
+			task = value.Task
+			lastError = value.LastError
+			b.dlq = append(b.dlq[:i], b.dlq[i+1:]...)
+			found = true
+			break
+		}
+	}
+	b.dlqMu.Unlock()
+
+	if !found {
+		return errors.New("task not found in DLQ")
+	}
+
+	b.mu.Lock()
+	b.retryQueue[taskID] = &TaskRetryState{
+		Task:        task,
+		Attempts:    0,
+		MaxRetries:  b.retryConfig.MaxRetries,
+		LastAttempt: time.Now(),
+		NextRetry:   time.Now(),
+		LastError:   lastError,
+	}
+	b.mu.Unlock()
+
+	return nil
+}
+
+func (b *MessageBroker) RemoveFromDLQ(taskID uuid.UUID) error {
+	b.dlqMu.Lock()
+	defer b.dlqMu.Unlock()
+	for i, value := range b.dlq {
+		if value.Task.ID == taskID {
+			b.dlq = append(b.dlq[:i], b.dlq[i+1:]...)
+			return nil
+		}
+	}
+	return errors.New("task not found to remove")
+}
+
+func (b *MessageBroker) ClearDLQ() {
+	b.dlqMu.Lock()
+	defer b.dlqMu.Unlock()
+	b.dlq = nil
 }
