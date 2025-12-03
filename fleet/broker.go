@@ -19,6 +19,7 @@ type Broker interface {
 	Publish(ctx context.Context, task Task) error
 	GetACKChannel() chan TaskAck
 	GetTaskStatus(taskID uuid.UUID) (*TaskState, error)
+	Shutdown()
 }
 
 type MessageBroker struct {
@@ -28,19 +29,27 @@ type MessageBroker struct {
 	retryQueue  map[uuid.UUID]*TaskRetryState
 	retryConfig RetryConfig
 	mu          sync.RWMutex
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
 }
 
 func NewMessageBroker() *MessageBroker {
+	ctx, cancel := context.WithCancel(context.Background())
 	b := &MessageBroker{
 		subscribers: make(map[string][]Subscriber),
 		ackChan:     make(chan TaskAck, 100),
 		taskStates:  make(map[uuid.UUID]*TaskState),
 		retryQueue:  make(map[uuid.UUID]*TaskRetryState),
 		retryConfig: DefaultRetryConfig(),
+		ctx:         ctx,
+		cancel:      cancel,
 	}
-	go b.processACKs()
-	go b.processRetries()
-	// TODO(human): Start processRetries() goroutine
+
+	// Start background goroutines with WaitGroup tracking
+	b.wg.Add(2)
+	go b.listenForACKs()
+	go b.initRetryBackgroundProcess()
 
 	return b
 }
@@ -128,67 +137,80 @@ func (b *MessageBroker) GetACKChannel() chan TaskAck {
 	return b.ackChan
 }
 
-func (b *MessageBroker) processACKs() {
-	for ack := range b.ackChan {
-		log.Printf("[ACK] Task %s: %s (device: %s, time: %s)",
-			ack.TaskID, ack.Status, ack.DeviceID, ack.Timestamp)
-
-		if ack.Status == Failed && ack.Error != "" {
-			log.Printf("[ACK] Error details: %s", ack.Error)
-		}
-
-		b.mu.Lock()
-		if state, exists := b.taskStates[ack.TaskID]; exists {
-			state.Status = ack.Status
-			state.DeviceID = ack.DeviceID.String()
-
-			switch ack.Status {
-			case Running:
-				if state.StartedAt == nil {
-					now := ack.Timestamp
-					state.StartedAt = &now
-				}
-			case Complete:
-				if state.CompletedAt == nil {
-					now := ack.Timestamp
-					state.CompletedAt = &now
-				}
-				delete(b.retryQueue, ack.TaskID)
-			case Failed:
-				t, ok := b.retryQueue[ack.TaskID]
-				if !ok {
-
-					tr := &TaskRetryState{
-						Attempts:    1,
-						Task:        state.Task,
-						MaxRetries:  b.retryConfig.MaxRetries,
-						LastAttempt: time.Now(),
-						LastError:   ack.Error,
-					}
-					backoff := calculateBackoff(tr.Attempts, b.retryConfig)
-					tr.NextRetry = time.Now().Add(backoff)
-					b.retryQueue[ack.TaskID] = tr
-					log.Printf("[RETRY] Task %s failed, scheduling retry attempt %d in %s", ack.TaskID, tr.Attempts+1, tr.NextRetry.String())
-				} else {
-					t.Attempts++
-					maxAttemptsExceeded := t.Attempts > b.retryConfig.MaxRetries
-					if maxAttemptsExceeded {
-						log.Printf("[RETRY] Task %s exceeded max retries (%d), giving up", ack.TaskID, b.retryConfig.MaxRetries)
-						delete(b.retryQueue, ack.TaskID)
-						break
-					}
-					backoff := calculateBackoff(t.Attempts, b.retryConfig)
-					nextRetry := time.Now().Add(backoff)
-					t.NextRetry = nextRetry
-					log.Printf("[RETRY] Task %s failed, scheduling retry attempt %d in %s", ack.TaskID, t.Attempts+1, t.NextRetry.String())
-				}
+func (b *MessageBroker) listenForACKs() {
+	defer b.wg.Done()
+	for {
+		select {
+		case <-b.ctx.Done():
+			return
+		case ack, ok := <-b.ackChan:
+			if !ok {
+				return
 			}
-		} else {
-			log.Printf("ack for unknown task %s", ack.TaskID)
+			b.processACK(ack)
 		}
-		b.mu.Unlock()
+	}
+}
+
+func (b *MessageBroker) processACK(ack TaskAck) {
+
+	log.Printf("[ACK] Task %s: %s (device: %s, time: %s)",
+		ack.TaskID, ack.Status, ack.DeviceID, ack.Timestamp)
+
+	if ack.Status == Failed && ack.Error != "" {
+		log.Printf("[ACK] Error details: %s", ack.Error)
 	}
 
+	b.mu.Lock()
+	if state, exists := b.taskStates[ack.TaskID]; exists {
+		state.Status = ack.Status
+		state.DeviceID = ack.DeviceID.String()
+
+		switch ack.Status {
+		case Running:
+			if state.StartedAt == nil {
+				now := ack.Timestamp
+				state.StartedAt = &now
+			}
+		case Complete:
+			if state.CompletedAt == nil {
+				now := ack.Timestamp
+				state.CompletedAt = &now
+			}
+			delete(b.retryQueue, ack.TaskID)
+		case Failed:
+			t, ok := b.retryQueue[ack.TaskID]
+			if !ok {
+
+				tr := &TaskRetryState{
+					Attempts:    1,
+					Task:        state.Task,
+					MaxRetries:  b.retryConfig.MaxRetries,
+					LastAttempt: time.Now(),
+					LastError:   ack.Error,
+				}
+				backoff := calculateBackoff(tr.Attempts, b.retryConfig)
+				tr.NextRetry = time.Now().Add(backoff)
+				b.retryQueue[ack.TaskID] = tr
+				log.Printf("[RETRY] Task %s failed, scheduling retry attempt %d in %s", ack.TaskID, tr.Attempts+1, tr.NextRetry.String())
+			} else {
+				t.Attempts++
+				maxAttemptsExceeded := t.Attempts > b.retryConfig.MaxRetries
+				if maxAttemptsExceeded {
+					log.Printf("[RETRY] Task %s exceeded max retries (%d), giving up", ack.TaskID, b.retryConfig.MaxRetries)
+					delete(b.retryQueue, ack.TaskID)
+					break
+				}
+				backoff := calculateBackoff(t.Attempts, b.retryConfig)
+				nextRetry := time.Now().Add(backoff)
+				t.NextRetry = nextRetry
+				log.Printf("[RETRY] Task %s failed, scheduling retry attempt %d in %s", ack.TaskID, t.Attempts+1, t.NextRetry.String())
+			}
+		}
+	} else {
+		log.Printf("ack for unknown task %s", ack.TaskID)
+	}
+	b.mu.Unlock()
 }
 
 func (b *MessageBroker) GetTaskStatus(taskID uuid.UUID) (*TaskState, error) {
@@ -202,6 +224,18 @@ func (b *MessageBroker) GetTaskStatus(taskID uuid.UUID) (*TaskState, error) {
 	return &stateCopy, nil
 }
 
+// Shutdown gracefully stops the broker's background goroutines
+func (b *MessageBroker) Shutdown() {
+	// Signal all goroutines to stop
+	b.cancel()
+
+	// Wait for all goroutines to finish
+	b.wg.Wait()
+
+	// Close the ACK channel to prevent further writes
+	close(b.ackChan)
+}
+
 func calculateBackoff(attempts int, config RetryConfig) time.Duration {
 	if attempts == 0 {
 		return time.Second * 0
@@ -213,7 +247,8 @@ func calculateBackoff(attempts int, config RetryConfig) time.Duration {
 	return time.Duration(backoff)
 }
 
-func (b *MessageBroker) processRetries() {
+func (b *MessageBroker) initRetryBackgroundProcess() {
+	defer b.wg.Done()
 	for {
 		time.Sleep(time.Second * 1)
 
@@ -282,5 +317,35 @@ func (b *MessageBroker) processRetries() {
 		}
 		// Note: Tasks remain in retry queue
 		// processACKs will remove them on Complete or update on Failed
+		select {
+		case <-b.ctx.Done():
+			return
+		default:
+
+			time.Sleep(time.Second * 1)
+
+			// Collect tasks to retry (while holding lock)
+			b.mu.Lock()
+			var tasksToRetry []Task
+
+			for _, t := range b.retryQueue {
+				if t.NextRetry.After(time.Now()) {
+					continue
+				}
+				tasksToRetry = append(tasksToRetry, t.Task)
+			}
+			b.mu.Unlock()
+
+			// Publish tasks (without holding lock to avoid deadlock)
+			for _, task := range tasksToRetry {
+				ctx := context.Background()
+				b.Publish(ctx, task)
+
+				log.Printf("[RETRY] Republishing task %s", task.ID)
+			}
+			// Note: Tasks remain in retry queue
+			// processACKs will remove them on Complete or update on Failed
+		}
+
 	}
 }

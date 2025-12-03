@@ -55,6 +55,7 @@ func TestNewErrTaskAck(t *testing.T) {
 // TestMessageBroker_GetACKChannel verifies ACK channel is accessible
 func TestMessageBroker_GetACKChannel(t *testing.T) {
 	broker := NewMessageBroker()
+	defer broker.Shutdown()
 	defer close(broker.ackChan)
 
 	ackChan := broker.GetACKChannel()
@@ -76,6 +77,7 @@ func TestMessageBroker_GetACKChannel(t *testing.T) {
 // TestMessageBroker_ProcessACKs verifies ACK processing updates task state
 func TestMessageBroker_ProcessACKs(t *testing.T) {
 	broker := NewMessageBroker()
+	defer broker.Shutdown()
 	defer close(broker.ackChan)
 
 	// Publish a task to initialize state
@@ -147,6 +149,7 @@ func TestMessageBroker_ProcessACKs(t *testing.T) {
 // TestMessageBroker_ProcessACKs_Failed verifies failed task ACK handling
 func TestMessageBroker_ProcessACKs_Failed(t *testing.T) {
 	broker := NewMessageBroker()
+	defer broker.Shutdown()
 	defer close(broker.ackChan)
 
 	// Publish a task
@@ -198,6 +201,7 @@ func TestMessageBroker_ProcessACKs_Failed(t *testing.T) {
 // TestMessageBroker_ProcessACKs_UnknownTask verifies handling of ACK for unknown task
 func TestMessageBroker_ProcessACKs_UnknownTask(t *testing.T) {
 	broker := NewMessageBroker()
+	defer broker.Shutdown()
 	defer close(broker.ackChan)
 
 	unknownTaskID := uuid.New()
@@ -220,6 +224,7 @@ func TestMessageBroker_ProcessACKs_UnknownTask(t *testing.T) {
 // TestMessageBroker_GetTaskStatus verifies task status retrieval
 func TestMessageBroker_GetTaskStatus(t *testing.T) {
 	broker := NewMessageBroker()
+	defer broker.Shutdown()
 	defer close(broker.ackChan)
 
 	// Test non-existent task
@@ -269,6 +274,7 @@ func TestMessageBroker_GetTaskStatus(t *testing.T) {
 // TestSprinkler_ACK_Lifecycle is an integration test verifying the full ACK flow
 func TestSprinkler_ACK_Lifecycle(t *testing.T) {
 	broker := NewMessageBroker()
+	defer broker.Shutdown()
 	defer close(broker.ackChan)
 
 	sprinkler := NewSprinkler(broker, "a")
@@ -327,6 +333,7 @@ func TestSprinkler_ACK_Lifecycle(t *testing.T) {
 // TestSprinkler_ACK_UnknownInstruction verifies failed ACK for unknown instruction
 func TestSprinkler_ACK_UnknownInstruction(t *testing.T) {
 	broker := NewMessageBroker()
+	defer broker.Shutdown()
 	defer close(broker.ackChan)
 
 	sprinkler := NewSprinkler(broker, "b")
@@ -360,6 +367,7 @@ func TestSprinkler_ACK_UnknownInstruction(t *testing.T) {
 // TestMessageBroker_ConcurrentACKs verifies thread-safe ACK processing
 func TestMessageBroker_ConcurrentACKs(t *testing.T) {
 	broker := NewMessageBroker()
+	defer broker.Shutdown()
 	defer close(broker.ackChan)
 
 	ctx := context.Background()
@@ -450,6 +458,7 @@ func TestCalculateBackoff(t *testing.T) {
 // TestRetryOnFirstFailure verifies that first failure adds task to retry queue
 func TestRetryOnFirstFailure(t *testing.T) {
 	broker := NewMessageBroker()
+	defer broker.Shutdown()
 	ctx := context.Background()
 
 	task := Task{
@@ -504,6 +513,7 @@ func TestRetryOnFirstFailure(t *testing.T) {
 // TestRetryIncrementsAttempts verifies that subsequent failures increment attempts
 func TestRetryIncrementsAttempts(t *testing.T) {
 	broker := NewMessageBroker()
+	defer broker.Shutdown()
 	ctx := context.Background()
 
 	task := Task{
@@ -570,6 +580,7 @@ func TestRetryIncrementsAttempts(t *testing.T) {
 // TestMaxRetriesExceeded verifies task removal after max retries
 func TestMaxRetriesExceeded(t *testing.T) {
 	broker := NewMessageBroker()
+	defer broker.Shutdown()
 	ctx := context.Background()
 
 	task := Task{
@@ -635,6 +646,7 @@ func TestMaxRetriesExceeded(t *testing.T) {
 // TestCompleteRemovesFromRetryQueue verifies Complete ACK removes task from retry queue
 func TestCompleteRemovesFromRetryQueue(t *testing.T) {
 	broker := NewMessageBroker()
+	defer broker.Shutdown()
 	ctx := context.Background()
 
 	task := Task{
@@ -704,6 +716,7 @@ func TestCompleteRemovesFromRetryQueue(t *testing.T) {
 // TestRetryBackoffTiming verifies retry happens after calculated backoff
 func TestRetryBackoffTiming(t *testing.T) {
 	broker := NewMessageBroker()
+	defer broker.Shutdown()
 
 	// Use shorter backoff for faster test
 	broker.mu.Lock()
