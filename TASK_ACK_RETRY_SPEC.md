@@ -384,12 +384,15 @@ log.Printf("[DLQ] Task %s: Max retries exceeded, moved to DLQ", taskID)
   - [x] Implement GetTaskStatus() query (`broker.go:158-167`)
   - [x] Tests included in Phase 1 test suite
 
-- [ ] **Phase 3**: Retry Logic
-  - [ ] Add TaskRetryState type
-  - [ ] Implement processRetries() goroutine
-  - [ ] Exponential backoff algorithm
-  - [ ] Integrate with processACKs()
-  - [ ] Write tests
+- [x] **Phase 3**: Retry Logic ✅ COMPLETE
+  - [x] Add TaskRetryState and RetryConfig types (`task.go:62-86`)
+  - [x] Add retryQueue and retryConfig to MessageBroker (`broker.go:28-29`)
+  - [x] Implement calculateBackoff() function (`broker.go:191-214`)
+  - [x] Implement processRetries() goroutine (`broker.go:216-244`)
+  - [x] Integrate with processACKs() - handles first failure and retry failures (`broker.go:157-184`)
+  - [x] Write tests (7 comprehensive tests in `broker_test.go:415-755`)
+  - [x] Fixed deadlock by using collect-then-process pattern (avoid calling Publish under lock)
+  - [x] Tasks remain in retry queue for attempt tracking; removed on Complete or max retries
 
 - [ ] **Phase 4**: Dead Letter Queue
   - [ ] Add DLQ to broker
@@ -438,3 +441,34 @@ During test development, critical issues were uncovered and fixed:
 4. **Context Cancellation in ACK Logic** (`sprinkler.go:88-89`)
    - Added: Skip ACK for `context.Canceled` errors during shutdown
    - Prevents: Spurious failure ACKs when device is deliberately shut down
+
+### Phase 3 Implementation Improvements
+
+Critical concurrency issues were discovered and resolved during implementation:
+
+1. **Deadlock Prevention** (`broker.go:216-244`)
+   - Issue: `processRetries` called `Publish()` while holding mutex lock
+   - Problem: `Publish()` acquires same lock internally → deadlock
+   - Solution: Collect-then-process pattern - gather tasks under lock, release, then publish
+   - Pattern: Never hold mutex while calling functions that acquire locks
+   - Impact: Prevents complete system freeze
+
+2. **State Ownership and Attempt Tracking** (`broker.go:234-242`)
+   - Issue: Original design deleted task from retry queue after republishing
+   - Problem: When task failed again, `processACKs` treated it as first failure (Attempts=1)
+   - Solution: Tasks remain in retry queue until Complete ACK or max retries exceeded
+   - Pattern: Retry queue is source of truth for attempt count
+   - Impact: Correct retry counting and backoff calculation
+
+3. **Concurrent Map Access** (`broker.go:221-232`)
+   - Issue: Early attempt iterated `retryQueue` without holding lock
+   - Problem: `processACKs` could modify map during iteration → panic
+   - Solution: Hold lock for entire iteration while collecting tasks to retry
+   - Pattern: All map access must be protected by mutex
+   - Impact: Prevents "concurrent map iteration and map write" crashes
+
+4. **Time Duration Math** (`broker.go:191-214`)
+   - Issue: Confusion between `time.Duration` (int64 nanoseconds) and conceptual units
+   - Solution: Convert to float64 for calculations, convert back to Duration
+   - Pattern: `time.Duration(float64(InitialBackoff) * math.Pow(factor, attempts))`
+   - Impact: Correct exponential backoff timing

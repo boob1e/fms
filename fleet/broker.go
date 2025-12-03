@@ -245,3 +245,42 @@ func (b *MessageBroker) processRetries() {
 		}
 	}
 }
+
+func calculateBackoff(attempts int, config RetryConfig) time.Duration {
+	if attempts == 0 {
+		return time.Second * 0
+	}
+	backoff := math.Pow(config.BackoffFactor, float64(attempts))
+	backoff = backoff * float64(config.InitialBackoff)
+	backoff = math.Min(backoff, float64(config.MaxBackoff))
+
+	return time.Duration(backoff)
+}
+
+func (b *MessageBroker) processRetries() {
+	for {
+		time.Sleep(time.Second * 1)
+
+		// Collect tasks to retry (while holding lock)
+		b.mu.Lock()
+		var tasksToRetry []Task
+
+		for _, t := range b.retryQueue {
+			if t.NextRetry.After(time.Now()) {
+				continue
+			}
+			tasksToRetry = append(tasksToRetry, t.Task)
+		}
+		b.mu.Unlock()
+
+		// Publish tasks (without holding lock to avoid deadlock)
+		for _, task := range tasksToRetry {
+			ctx := context.Background()
+			b.Publish(ctx, task)
+
+			log.Printf("[RETRY] Republishing task %s", task.ID)
+		}
+		// Note: Tasks remain in retry queue
+		// processACKs will remove them on Complete or update on Failed
+	}
+}
