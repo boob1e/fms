@@ -46,7 +46,6 @@ func NewMessageBroker() *MessageBroker {
 		cancel:      cancel,
 	}
 
-	// Start background goroutines with WaitGroup tracking
 	b.wg.Add(2)
 	go b.listenForACKs()
 	go b.initRetryBackgroundProcess()
@@ -91,7 +90,6 @@ func (b *MessageBroker) Publish(ctx context.Context, task Task) error {
 	subs := b.subscribers[task.Topic]
 	b.mu.RUnlock()
 
-	// No subscribers is not an error, just a no-op
 	if len(subs) == 0 {
 		log.Printf("[WARN] No subscribers for topic '%s', task %s not delivered", task.Topic, task.ID)
 		return nil
@@ -103,7 +101,6 @@ func (b *MessageBroker) Publish(ctx context.Context, task Task) error {
 		channelFullCount int
 	)
 
-	// Best-effort: attempt delivery to ALL subscribers
 	for i, sub := range subs {
 		select {
 		case sub <- task:
@@ -120,7 +117,6 @@ func (b *MessageBroker) Publish(ctx context.Context, task Task) error {
 		}
 	}
 
-	// Return error if ANY delivery failed, but include success stats
 	if timeoutCount > 0 || channelFullCount > 0 {
 		return fmt.Errorf(
 			"partial delivery failure on topic '%s': %d/%d delivered (%d timeout, %d channel full)",
@@ -224,7 +220,6 @@ func (b *MessageBroker) GetTaskStatus(taskID uuid.UUID) (*TaskState, error) {
 	return &stateCopy, nil
 }
 
-// Shutdown gracefully stops the broker's background goroutines
 func (b *MessageBroker) Shutdown() {
 	// Signal all goroutines to stop
 	b.cancel()
@@ -252,7 +247,6 @@ func (b *MessageBroker) initRetryBackgroundProcess() {
 	for {
 		time.Sleep(time.Second * 1)
 
-		// Collect tasks to retry (while holding lock)
 		b.mu.Lock()
 		var tasksToRetry []Task
 		var keysToDelete []uuid.UUID
@@ -266,86 +260,15 @@ func (b *MessageBroker) initRetryBackgroundProcess() {
 		}
 		b.mu.Unlock()
 
-		// Publish tasks (without holding lock to avoid deadlock)
 		for i, task := range tasksToRetry {
 			ctx := context.Background()
 			b.Publish(ctx, task)
 
-			// Remove from retry queue after publish
 			b.mu.Lock()
 			delete(b.retryQueue, keysToDelete[i])
 			b.mu.Unlock()
 
 			log.Printf("[RETRY] Republishing task %s", task.ID)
 		}
-	}
-}
-
-func calculateBackoff(attempts int, config RetryConfig) time.Duration {
-	if attempts == 0 {
-		return time.Second * 0
-	}
-	backoff := math.Pow(config.BackoffFactor, float64(attempts))
-	backoff = backoff * float64(config.InitialBackoff)
-	backoff = math.Min(backoff, float64(config.MaxBackoff))
-
-	return time.Duration(backoff)
-}
-
-func (b *MessageBroker) processRetries() {
-	for {
-		time.Sleep(time.Second * 1)
-
-		// Collect tasks to retry (while holding lock)
-		b.mu.Lock()
-		var tasksToRetry []Task
-
-		for _, t := range b.retryQueue {
-			if t.NextRetry.After(time.Now()) {
-				continue
-			}
-			tasksToRetry = append(tasksToRetry, t.Task)
-		}
-		b.mu.Unlock()
-
-		// Publish tasks (without holding lock to avoid deadlock)
-		for _, task := range tasksToRetry {
-			ctx := context.Background()
-			b.Publish(ctx, task)
-
-			log.Printf("[RETRY] Republishing task %s", task.ID)
-		}
-		// Note: Tasks remain in retry queue
-		// processACKs will remove them on Complete or update on Failed
-		select {
-		case <-b.ctx.Done():
-			return
-		default:
-
-			time.Sleep(time.Second * 1)
-
-			// Collect tasks to retry (while holding lock)
-			b.mu.Lock()
-			var tasksToRetry []Task
-
-			for _, t := range b.retryQueue {
-				if t.NextRetry.After(time.Now()) {
-					continue
-				}
-				tasksToRetry = append(tasksToRetry, t.Task)
-			}
-			b.mu.Unlock()
-
-			// Publish tasks (without holding lock to avoid deadlock)
-			for _, task := range tasksToRetry {
-				ctx := context.Background()
-				b.Publish(ctx, task)
-
-				log.Printf("[RETRY] Republishing task %s", task.ID)
-			}
-			// Note: Tasks remain in retry queue
-			// processACKs will remove them on Complete or update on Failed
-		}
-
 	}
 }
